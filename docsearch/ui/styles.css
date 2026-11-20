@@ -447,8 +447,8 @@ main { height: calc(100% - 58px); }
 .adv-block.two { display: grid; grid-template-columns: 130px minmax(0, 1fr); gap: 12px; }
 .adv-hint { margin-top: 8px !important; font-size: 10px !important; color: var(--faint) !important; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 10.5px; color: var(--muted); }
-.field input { border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; font-size: 11.5px; outline: none; background: var(--white); width: 100%; }
-.field input:focus { border-color: var(--teal-300); box-shadow: 0 0 0 3px rgba(3,174,181,.12); }
+.field input, .field textarea { border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; font-size: 11.5px; outline: none; background: var(--white); width: 100%; font-family: inherit; resize: vertical; line-height: 1.5; }
+.field input:focus, .field textarea:focus { border-color: var(--teal-300); box-shadow: 0 0 0 3px rgba(3,174,181,.12); }
 .cache-line { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; }
 .head-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 

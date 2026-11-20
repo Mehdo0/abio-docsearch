@@ -214,16 +214,16 @@
           <div class="adv-head">
             <div>
               <h3>Fichiers ignorés</h3>
-              <p>Ces fichiers ne sont pas indexés et n'apparaissent jamais dans les résultats. Retire une ligne pour les réintégrer, puis relance l'analyse.</p>
+              <p>Ces fichiers ne sont pas indexés et n'apparaissent jamais dans les résultats. Retirez une ligne pour les réintégrer, puis relancez l'analyse.</p>
             </div>
           </div>
           <label class="field">
             <span>Extensions ignorées (séparées par des virgules)</span>
-            <input id="excludeExts" type="text" placeholder=".zip, .exe, .tmp">
+            <textarea id="excludeExts" rows="3" spellcheck="false" placeholder=".zip, .exe, .tmp"></textarea>
           </label>
           <label class="field">
             <span>Noms ignorés — les jokers * sont acceptés</span>
-            <input id="excludeNames" type="text" placeholder="~$*, thumbs.db">
+            <textarea id="excludeNames" rows="2" spellcheck="false" placeholder="~$*, thumbs.db"></textarea>
           </label>
           <p class="adv-hint">Par défaut : archives (zip, rar, 7z), exécutables, fichiers système, temporaires et fichiers de verrouillage Office.</p>
         </section>

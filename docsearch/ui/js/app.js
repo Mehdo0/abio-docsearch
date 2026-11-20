@@ -364,6 +364,14 @@ function select(index, openPreview = false, fromHover = false, delay = null) {
     if (active && !fromHover) row.scrollIntoView({ block: "nearest" });
   });
   const item = S.results[index];
+  // Les informations et les boutons apparaissent dès la sélection,
+  // avant même le début du rendu de l'aperçu.
+  if (S.previewItem?.path !== item.path) {
+    renderPreviewDoc(item);
+    renderActions(item);
+    renderSkeleton();
+    $("#previewFlag").textContent = "préparation…";
+  }
   const wait = delay === null ? (fromHover ? 130 : 0) : delay;
   clearTimeout(S.previewTimer);
   S.previewTimer = setTimeout(() => previewFor(item), wait);
