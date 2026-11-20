@@ -96,3 +96,42 @@ def test_cancelled_scan_keeps_index(tmp_path: Path) -> None:
     result = catalog.scan([str(share)], CONFIG, cancel=cancel)
     assert result["cancelled"] is True
     assert catalog.stats()["files"] == 3
+
+
+def test_scan_ignores_archives_and_junk(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "Rapport.pdf").write_bytes(b"%PDF-1.4\n")
+    (share / "Sauvegarde.zip").write_bytes(b"PK\x03\x04")
+    (share / "Installateur.exe").write_bytes(b"MZ")
+    (share / "~$Rapport.docx").write_bytes(b"lock")
+    (share / "Thumbs.db").write_bytes(b"db")
+    (share / "note.tmp").write_bytes(b"tmp")
+
+    catalog = Catalog(tmp_path / "index.db")
+    config = {
+        "exclude_dirs": [],
+        "threads": 2,
+        "include_exts": [],
+        "exclude_exts": [".zip", ".exe"],
+        "exclude_names": ["thumbs.db", "~$*", "*.tmp"],
+    }
+    result = catalog.scan([str(share)], config)
+
+    assert result["files"] == 1
+    assert result["ignored"] == 5
+    assert [f["name"] for f in catalog.search("")["files"]] == ["Rapport.pdf"]
+
+
+def test_default_config_excludes_archives(tmp_path: Path) -> None:
+    from docsearch.paths import DEFAULT_CONFIG
+
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "doc.pdf").write_bytes(b"%PDF-1.4\n")
+    (share / "doc.zip").write_bytes(b"PK\x03\x04")
+    (share / "doc.7z").write_bytes(b"7z")
+    catalog = Catalog(tmp_path / "index.db")
+    result = catalog.scan([str(share)], DEFAULT_CONFIG)
+    assert result["files"] == 1
+    assert result["ignored"] == 2

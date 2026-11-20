@@ -7,6 +7,7 @@ lu uniquement au moment d'un aperçu, à la demande.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import queue
@@ -288,11 +289,16 @@ class Catalog:
         excluded = {norm(x) for x in config.get("exclude_dirs", [])}
         threads = int(config.get("threads", 8) or 8)
         include = {e.lower() for e in config.get("include_exts", [])}
+        exclude_exts = {
+            (e.lower() if e.lower().startswith(".") else "." + e.lower())
+            for e in config.get("exclude_exts", [])
+        }
+        exclude_names = [n.lower() for n in config.get("exclude_names", [])]
 
         errors: list = []
         skipped: list = []
         t0 = time.perf_counter()
-        counters = {"files": 0, "dirs": 0, "added": 0, "visited": 0}
+        counters = {"files": 0, "dirs": 0, "added": 0, "visited": 0, "ignored": 0}
         last_emit = [0.0]
         current = [""]
         batch: list[tuple] = []
@@ -313,6 +319,7 @@ class Catalog:
                 "visited": counters["visited"],
                 "errors": len(errors),
                 "excluded": len(skipped),
+                "ignored": counters["ignored"],
                 "current": current[0],
                 "elapsed": round(now - t0, 1),
             })
@@ -385,7 +392,14 @@ class Catalog:
                 else:
                     _, path, name, size, mtime, kind = item
                     ext = os.path.splitext(name)[1].lower()
+                    lower = name.lower()
                     if include and ext not in include:
+                        counters["ignored"] += 1
+                        continue
+                    if ext in exclude_exts or lower.startswith("~$") or any(
+                        fnmatch.fnmatch(lower, pattern) for pattern in exclude_names
+                    ):
+                        counters["ignored"] += 1
                         continue
                     batch.append((path, name, expand_name(name), ext,
                                   os.path.dirname(path), size, mtime, scan_id))
@@ -438,6 +452,7 @@ class Catalog:
             "visited": counters["visited"],
             "gone": gone,
             "excluded": len(skipped),
+            "ignored": counters["ignored"],
             "errors": len(errors),
             "elapsed": round(elapsed, 1),
             "rate": round(counters["visited"] / max(elapsed, 0.001)),

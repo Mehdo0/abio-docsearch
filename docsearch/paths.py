@@ -16,7 +16,7 @@ from pathlib import Path
 
 APP_NAME = "Abionic DocSearch"
 APP_SLUG = "abionic-docsearch"
-VERSION = "3.0.0"
+VERSION = "3.1.0"
 
 DEFAULT_CONFIG: dict = {
     "roots": [],
@@ -30,6 +30,14 @@ DEFAULT_CONFIG: dict = {
         "__pycache__",
     ],
     "include_exts": [],
+    "exclude_exts": [
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".cab", ".iso",
+        ".exe", ".msi", ".dll", ".sys", ".drv", ".so", ".dylib", ".bat", ".cmd",
+        ".ps1", ".vbs", ".jar", ".tmp", ".temp", ".bak", ".old", ".orig", ".dmp",
+        ".part", ".crdownload", ".lnk", ".url", ".db", ".sqlite", ".sqlite3",
+        ".mdb", ".ldb", ".log",
+    ],
+    "exclude_names": ["thumbs.db", "desktop.ini", ".ds_store", "~$*", "*.tmp", "*.bak"],
     "threads": 8,
     "preview_cache_mb": 800,
 }

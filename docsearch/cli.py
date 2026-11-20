@@ -69,6 +69,8 @@ def cmd_scan(args) -> int:
     print(f"  dossiers   {result['dirs']:>9,}".replace(",", " "))
     print(f"  ajoutés    {result['added']:>9,}".replace(",", " "))
     print(f"  disparus   {result['gone']:>9,}".replace(",", " "))
+    if result.get("ignored"):
+        print(f"  ignorés    {result['ignored']:>9,}".replace(",", " "))
     print(f"  durée      {result['elapsed']:>9.1f} s  ({result['rate']:,} f/s)".replace(",", " "))
     print(f"  index      {human_size(result['db_size'])}")
     if result["errors"]:
