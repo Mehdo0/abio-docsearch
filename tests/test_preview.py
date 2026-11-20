@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from docsearch import preview
+from docsearch.winpath import display_path
 
 
 @pytest.fixture(autouse=True)
@@ -228,3 +229,23 @@ def test_non_utf8_filename_does_not_raise(tmp_path: Path) -> None:
     result = preview.render(str(path), allow_office=False)
     assert result["ok"] is True
     assert "Contenu lisible" in result["text"]
+
+
+def test_preview_reads_a_path_beyond_260_characters(tmp_path: Path) -> None:
+    deep = tmp_path
+    for index in range(12):
+        deep = deep / (f"niveau_{index:02d}_" + "y" * 25)
+    deep.mkdir(parents=True)
+    document = deep / "note_profonde.txt"
+    document.write_text("ligne profonde\n", encoding="utf-8")
+    assert len(str(document)) > 300
+
+    out = preview.render(str(document), allow_office=False)
+    assert out["ok"] is True
+    assert "ligne profonde" in out["text"]
+
+
+def test_display_path_removes_the_windows_prefix() -> None:
+    assert display_path("\\\\?\\T:\\a\\b.docx") == "T:\\a\\b.docx"
+    assert display_path("\\\\?\\UNC\\serveur\\partage\\a.docx") == "\\\\serveur\\partage\\a.docx"
+    assert display_path("T:\\a\\b.docx") == "T:\\a\\b.docx"

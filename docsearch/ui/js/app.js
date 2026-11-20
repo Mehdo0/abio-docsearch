@@ -523,6 +523,7 @@ async function openItem(item) {
   if (!item) return;
   const r = await Bridge.call("open_file", item.path);
   if (!r.ok) toast(r.error || "Impossible d'ouvrir le document", true);
+  else if (r.note) toast(r.note);
 }
 
 /* ------------------------------------------------------------------ index */

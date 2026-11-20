@@ -135,3 +135,24 @@ def test_default_config_excludes_archives(tmp_path: Path) -> None:
     result = catalog.scan([str(share)], DEFAULT_CONFIG)
     assert result["files"] == 1
     assert result["ignored"] == 2
+
+
+def test_scan_reads_paths_beyond_260_characters(tmp_path: Path) -> None:
+    """Windows masque les chemins > 260 caractères sans le préfixe étendu."""
+    share = tmp_path / "share"
+    deep = share
+    for index in range(12):
+        deep = deep / (f"dossier_{index:02d}_" + "x" * 25)
+    deep.mkdir(parents=True)
+    document = deep / "Rapport_tres_profond.txt"
+    document.write_text("contenu profond", encoding="utf-8")
+    assert len(str(document)) > 300
+
+    catalog = Catalog(tmp_path / "index.db")
+    result = catalog.scan([str(share)], CONFIG)
+
+    assert result["files"] == 1
+    found = catalog.search("profond")["files"]
+    assert [f["name"] for f in found] == ["Rapport_tres_profond.txt"]
+    assert found[0]["path"] == str(document)
+    assert not found[0]["path"].startswith("\\\\?\\")

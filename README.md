@@ -184,6 +184,13 @@ tools/          générateur de corpus, serveur de développement
   images, PDF chiffrés, DOCX abîmés, feuilles masquées…) et les correctifs
   associés.
 
+## Chemins longs
+
+Les partages Abionic contiennent des chemins qui dépassent la limite de
+Windows (260 caractères). L'analyse, la recherche et l'aperçu les prennent en
+charge. Si Windows refuse l'ouverture directe, le document s'ouvre depuis une
+copie temporaire, avec un message qui le signale.
+
 ## Limites connues
 
 - Le contenu des documents n'est pas indexé, seulement les noms de fichiers et

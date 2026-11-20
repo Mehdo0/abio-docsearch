@@ -30,6 +30,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 from .paths import data_dir, load_config, preview_dir
+from .winpath import io_path
 
 try:  # PyMuPDF >= 1.24
     import pymupdf as fitz  # type: ignore
@@ -104,6 +105,22 @@ def _friendly_error(exc: BaseException) -> str:
 # ---------------------------------------------------------------------------
 # cache disque (jamais bloquant)
 # ---------------------------------------------------------------------------
+
+def _pdf_open(path: str):
+    """Ouvre un PDF ou une image, y compris au-delà de 260 caractères.
+
+    MuPDF reçoit parfois mal le préfixe étendu : en cas d'échec, les octets
+    sont lus par Python (qui le gère) puis passés en mémoire.
+    """
+    target = io_path(path)
+    try:
+        return fitz.open(target)
+    except Exception:
+        # Un PDF de plusieurs centaines de Mo ne doit pas être chargé en RAM.
+        if Path(target).stat().st_size > 300 * 1024 * 1024:
+            raise
+        return fitz.open(stream=Path(target).read_bytes())
+
 
 def _cache_key(path: str, stat: os.stat_result) -> str:
     raw = f"{path.lower()}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8", "replace")
@@ -232,7 +249,7 @@ def _encode_jpeg(pix) -> tuple[str, int, int]:
 
 
 def _pdf_page_one(path: str) -> dict:
-    doc = fitz.open(path)
+    doc = _pdf_open(path)
     try:
         if doc.needs_pass:
             return {"ok": False, "error": "Document protégé par mot de passe."}
@@ -254,7 +271,7 @@ def _pdf_page_one(path: str) -> dict:
 
 
 def _image_preview_pymupdf(path: str) -> dict:
-    doc = fitz.open(path)
+    doc = _pdf_open(path)
     try:
         page = doc[0]
         rect = page.rect
@@ -274,7 +291,7 @@ def _image_preview_pymupdf(path: str) -> dict:
 def _image_preview_pillow(path: str) -> dict:
     from PIL import Image  # type: ignore
 
-    with Image.open(path) as image:
+    with Image.open(io_path(path)) as image:
         image.seek(0)
         image = image.convert("RGB")
         image.thumbnail((PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT))
@@ -432,7 +449,7 @@ def _convert_with_timeout(ext: str, src: str, dst: str, timeout: int = OFFICE_TI
 
 def _sniff_ext(path: str, ext: str) -> str:
     try:
-        with open(path, "rb") as fh:
+        with open(io_path(path), "rb") as fh:
             head = fh.read(16)
     except OSError:
         return ext
@@ -452,7 +469,7 @@ def _sniff_ext(path: str, ext: str) -> str:
         return ".webp"
     if head.startswith(b"PK\x03\x04") and ext not in OFFICE_EXTS:
         try:
-            with zipfile.ZipFile(path) as archive:
+            with zipfile.ZipFile(io_path(path)) as archive:
                 names = archive.namelist()
             if "word/document.xml" in names:
                 return ".docx"
@@ -519,7 +536,7 @@ def _docx_xml_text(path: str) -> tuple[str, list[str]]:
     Gère les paragraphes, les tableaux, les zones de texte et les content
     controls (w:sdt), qui échappent à python-docx.
     """
-    with zipfile.ZipFile(path) as archive:
+    with zipfile.ZipFile(io_path(path)) as archive:
         if "word/document.xml" not in archive.namelist():
             raise ValueError("archive sans corps Word")
         xml = archive.read("word/document.xml")
@@ -570,7 +587,7 @@ def _docx_xml_text(path: str) -> tuple[str, list[str]]:
 def _docx_text_pydocx(path: str) -> tuple[str, list[str]]:
     from docx import Document  # type: ignore
 
-    doc = Document(path)
+    doc = Document(io_path(path))
     lines = _clean_lines([(p.text or "").strip() for p in doc.paragraphs])
     if len(" ".join(lines)) < TEXT_LIMIT:
         for table in doc.tables[:3]:
@@ -623,7 +640,7 @@ def _pptx_walk_shapes(shapes, lines: list[str], depth: int = 0) -> None:
 def _pptx_text_pydocx(path: str) -> tuple[str, list[str]]:
     from pptx import Presentation  # type: ignore
 
-    pres = Presentation(path)
+    pres = Presentation(io_path(path))
     lines: list[str] = []
     if len(pres.slides):
         _pptx_walk_shapes(pres.slides[0].shapes, lines)
@@ -632,7 +649,7 @@ def _pptx_text_pydocx(path: str) -> tuple[str, list[str]]:
 
 
 def _pptx_xml_text(path: str) -> tuple[str, list[str]]:
-    with zipfile.ZipFile(path) as archive:
+    with zipfile.ZipFile(io_path(path)) as archive:
         names = sorted(n for n in archive.namelist()
                        if re.fullmatch(r"ppt/slides/slide\d+\.xml", n))
         if not names:
@@ -668,7 +685,7 @@ def _xlsx_table_openpyxl(path: str) -> tuple[list[list[str]], bool]:
     from openpyxl import load_workbook  # type: ignore
 
     def read(data_only: bool) -> tuple[list[list[str]], bool]:
-        wb = load_workbook(path, read_only=True, data_only=data_only)
+        wb = load_workbook(io_path(path), read_only=True, data_only=data_only)
         try:
             ws = None
             for name in wb.sheetnames:
@@ -709,7 +726,7 @@ def _xlsx_table_openpyxl(path: str) -> tuple[list[list[str]], bool]:
 
 
 def _xlsx_table_xml(path: str) -> list[list[str]]:
-    with zipfile.ZipFile(path) as archive:
+    with zipfile.ZipFile(io_path(path)) as archive:
         names = archive.namelist()
         shared: list[str] = []
         if "xl/sharedStrings.xml" in names:
@@ -765,7 +782,7 @@ def _xlsx_table(path: str) -> tuple[list[list[str]], bool]:
 
 
 def _csv_table(path: str) -> list[list[str]]:
-    raw = Path(path).read_bytes()[:400_000]
+    raw = Path(io_path(path)).read_bytes()[:400_000]
     text = _decode_bytes(raw)
     sample = text[:8192]
     try:
@@ -803,7 +820,7 @@ def _text_preview(ext: str, path: str) -> dict:
         elif ext == ".csv":
             table = _csv_table(path)
         elif ext in TEXT_EXTS:
-            body = _clean_text(_decode_bytes(Path(path).read_bytes()[:200_000]))
+            body = _clean_text(_decode_bytes(Path(io_path(path)).read_bytes()[:200_000]))
             first = next((line.strip() for line in body.splitlines() if line.strip()), "")
             title = first[:90] or title
             body = body[:TEXT_LIMIT]
@@ -843,11 +860,11 @@ def render(path: str, allow_office: bool = True, mode: str = "full") -> dict:
     """
     started = time.perf_counter()
     try:
-        st = os.stat(path)
+        st = os.stat(io_path(path))
     except OSError as exc:
         return {"ok": False, "error": f"Fichier introuvable ({exc.strerror})."}
 
-    ext = _sniff_ext(path, Path(path).suffix.lower())
+    ext = _sniff_ext(io_path(path), Path(path).suffix.lower())
     want_image = ext == ".pdf" or ext in IMAGE_EXTS or (
         mode != "fast" and ext in OFFICE_EXTS
     )

@@ -25,6 +25,7 @@ from .paths import (
     save_config,
     ui_dir,
 )
+from .winpath import io_path
 
 
 class Api:
@@ -104,12 +105,44 @@ class Api:
             return {"ok": False, "error": str(exc)}
 
     def open_file(self, path: str) -> dict:
-        if not Path(path).exists():
+        target = io_path(path)
+        if not Path(target).exists():
             return {"ok": False, "error": "Fichier introuvable"}
+        if os.name == "nt":
+            # Windows limite les chemins à 260 caractères. On essaie d'abord la
+            # forme normale (comprise par toutes les applications), puis la
+            # forme étendue, que le shell accepte sur les versions récentes.
+            for candidate in (path, target):
+                try:
+                    os.startfile(candidate)  # type: ignore[attr-defined]
+                    return {"ok": True}
+                except OSError:
+                    continue
+            # Dernier recours : une copie temporaire, toujours ouvrable. Le
+            # document reste consultable même si le chemin dépasse la limite.
+            try:
+                import hashlib
+                import shutil
+                import tempfile
+
+                digest = hashlib.sha1(path.encode("utf-8", "replace")).hexdigest()[:8]
+                copy = Path(tempfile.gettempdir()) / "Abionic" / f"{digest}_{Path(path).name}"
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(target, copy)
+                os.startfile(str(copy))  # type: ignore[attr-defined]
+                return {
+                    "ok": True,
+                    "note": "Chemin trop long : ouvert depuis une copie temporaire. "
+                            "Les modifications ne seront pas enregistrées dans l'original.",
+                }
+            except OSError:
+                return {
+                    "ok": False,
+                    "error": "Chemin trop long pour Windows. Utilisez « Dossier » "
+                             "pour atteindre le document dans l'Explorateur.",
+                }
         try:
-            if os.name == "nt":
-                os.startfile(path)  # type: ignore[attr-defined]
-            elif sys.platform == "darwin":
+            if sys.platform == "darwin":
                 subprocess.Popen(["open", path])
             else:
                 subprocess.Popen(["xdg-open", path])
@@ -143,7 +176,8 @@ class Api:
             return {"ok": False, "error": str(exc)}
 
     def open_folder(self, path: str) -> dict:
-        return self.open_file(path if Path(path).is_dir() else str(Path(path).parent))
+        target = Path(io_path(path))
+        return self.open_file(path if target.is_dir() else str(Path(path).parent))
 
     # -- index --------------------------------------------------------------
     def choose_folders(self) -> list[str]:
@@ -168,7 +202,7 @@ class Api:
             roots = [str(Path(r)) for r in (roots or []) if r]
             if not roots:
                 return {"ok": False, "error": "Choisis au moins un dossier"}
-            missing = [r for r in roots if not Path(r).exists()]
+            missing = [r for r in roots if not Path(io_path(r)).exists()]
             if missing:
                 return {"ok": False, "error": "Introuvable : " + ", ".join(missing)}
             self._cancel.clear()
@@ -252,7 +286,7 @@ class Api:
         return self.open_file(str(data_dir()))
 
     def check_paths(self, roots: list[str]) -> list[dict]:
-        return [{"path": r, "exists": Path(r).exists()} for r in (roots or [])]
+        return [{"path": r, "exists": Path(io_path(r)).exists()} for r in (roots or [])]
 
 
 def _default_folders() -> list[str]:

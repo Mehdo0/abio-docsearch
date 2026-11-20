@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .paths import human_size
+from .winpath import display_path, io_path
 
 SCHEMA_VERSION = "3.1"
 
@@ -179,10 +180,13 @@ def walk_paths(
                 continue
             items: list[tuple] = []
             try:
-                with os.scandir(folder) as it:
+                # Préfixe étendu : sans lui, un dossier dont le chemin dépasse
+                # 260 caractères est invisible pour Windows.
+                with os.scandir(io_path(folder)) as it:
                     for entry in it:
                         if cancel is not None and cancel.is_set():
                             break
+                        child = display_path(os.path.join(folder, entry.name))
                         try:
                             is_dir = entry.is_dir(follow_symlinks=False)
                         except OSError:
@@ -192,14 +196,14 @@ def walk_paths(
                                 skipped.append(1)
                                 continue
                             with lock:
-                                key = entry.path.lower()
+                                key = child.lower()
                                 if key in seen_dirs or depth > 60:
                                     continue
                                 seen_dirs.add(key)
                                 active[0] += 1
                             on_dir()
-                            items.append(("d", entry.path, entry.name, depth + 1))
-                            work.put((entry.path, depth + 1))
+                            items.append(("d", child, entry.name, depth + 1))
+                            work.put((child, depth + 1))
                         else:
                             on_tick(1)
                             try:
@@ -209,7 +213,7 @@ def walk_paths(
                                 kind = "link" if attrs & 0x400 else "file"
                             except OSError:
                                 size, mtime, kind = 0, 0, "file"
-                            items.append(("f", entry.path, entry.name, size, mtime, kind))
+                            items.append(("f", child, entry.name, size, mtime, kind))
             except PermissionError:
                 errors.append((folder, "acces refuse"))
             except OSError as exc:
@@ -633,4 +637,4 @@ class Catalog:
         ]
 
     def path_exists(self, path: str) -> bool:
-        return Path(path).exists()
+        return Path(io_path(path)).exists()
