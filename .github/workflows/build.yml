@@ -57,6 +57,15 @@ jobs:
             --version-file packaging/version_info.txt `
             launcher_cli.py
 
+      - name: Auto-test des exécutables
+        run: |
+          & dist\abio-docsearch-cli.exe selftest
+          if ($LASTEXITCODE -ne 0) { throw "auto-test de la CLI en échec" }
+          $process = Start-Process -FilePath dist\AbionicDocSearch.exe `
+            -ArgumentList "--self-test" -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "auto-test de l'interface en échec" }
+          Write-Host "Auto-test des deux exécutables : OK"
+
       - name: Paquet de distribution
         run: |
           New-Item -ItemType Directory -Force dist\package | Out-Null

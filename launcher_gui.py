@@ -32,6 +32,11 @@ def _crash(exc: BaseException) -> None:
 
 
 def run() -> int:
+    if "--self-test" in sys.argv:
+        from docsearch.selftest import run as selftest
+
+        return selftest()
+
     from docsearch.app import main
 
     return main(debug="--debug" in sys.argv)

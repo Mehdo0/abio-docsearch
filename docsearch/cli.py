@@ -136,6 +136,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats = sub.add_parser("stats", help="état de l'index")
     stats.set_defaults(func=cmd_stats)
+
+    selftest = sub.add_parser("selftest", help="vérifie l'installation et les dépendances")
+    selftest.set_defaults(func=lambda args: __import__(
+        "docsearch.selftest", fromlist=["run"]).run())
     return parser
 
 
