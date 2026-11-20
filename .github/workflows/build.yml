@@ -46,6 +46,7 @@ jobs:
             --hidden-import pythoncom `
             --hidden-import win32com.client `
             --hidden-import win32timezone `
+            --hidden-import docsearch.selftest `
             --collect-submodules win32com `
             --collect-all webview `
             launcher_gui.py
@@ -55,6 +56,7 @@ jobs:
           pyinstaller --noconfirm --clean --onefile --console `
             --name abio-docsearch-cli `
             --version-file packaging/version_info.txt `
+            --hidden-import docsearch.selftest `
             launcher_cli.py
 
       - name: Auto-test des exécutables

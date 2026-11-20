@@ -110,6 +110,12 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_selftest(args) -> int:
+    from .selftest import run as run_selftest
+
+    return run_selftest()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="abio-docsearch-cli",
@@ -138,8 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
     stats.set_defaults(func=cmd_stats)
 
     selftest = sub.add_parser("selftest", help="vérifie l'installation et les dépendances")
-    selftest.set_defaults(func=lambda args: __import__(
-        "docsearch.selftest", fromlist=["run"]).run())
+    selftest.set_defaults(func=cmd_selftest)
     return parser
 
 
