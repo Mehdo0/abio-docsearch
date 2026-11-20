@@ -24,7 +24,7 @@ const S = {
   searchToken: 0,
   scanning: false,
   pollTimer: null,
-  cfg: { roots: [], exclude_dirs: [], threads: 8 },
+  cfg: { roots: [], exclude_dirs: [], exclude_exts: [], exclude_names: [], threads: 8 },
 };
 
 function esc(value) {
@@ -62,7 +62,7 @@ function highlight(text, query) {
   return raw.replace(pattern, "<mark>$1</mark>");
 }
 
-function typeTile(kind, small = false) {
+function typeTile(kind) {
   const k = KIND_LABEL[kind] ? kind : "other";
   return `<div class="type-icon type-${k}">${KIND_LABEL[k]}</div>`;
 }
@@ -79,17 +79,19 @@ async function init() {
   }
   S.cfg = S.boot.config || S.cfg;
   S.cfg.roots = S.cfg.roots || [];
+  S.cfg.exclude_exts = S.cfg.exclude_exts || [];
+  S.cfg.exclude_names = S.cfg.exclude_names || [];
   renderChip();
-  renderSearchMeta();
+  renderHead();
   renderRecent();
   showEmpty(true, "search");
   renderRoots();
   fillSettings();
+  renderIndex();
   renderAbout();
 
   if (!S.boot.stats.files) {
     nav("index");
-    $("#scanRootsCount").textContent = fmtInt(S.cfg.roots.length);
   } else {
     $("#q").focus();
   }
@@ -128,30 +130,36 @@ function wire() {
   $("#sort").addEventListener("change", () => { S.sort = $("#sort").value; runSearch(); });
 
   $("#results").addEventListener("click", (event) => {
-    const row = event.target.closest(".result");
-    if (row) select(Number(row.dataset.i), true);
     const folder = event.target.closest(".folder-row");
     if (folder) {
-      const input = $("#q");
-      const name = folder.dataset.name || "";
-      input.value = name;
-      S.query = name;
+      const value = folder.dataset.name || "";
+      $("#q").value = value;
+      S.query = value;
       S.type = "all";
       $$("#typeChips .chip").forEach((c) => c.classList.toggle("active", c.dataset.type === "all"));
       runSearch();
+      return;
     }
+    const row = event.target.closest(".result");
+    if (row) select(Number(row.dataset.i), false, false, 0);
   });
   $("#results").addEventListener("dblclick", (event) => {
     const row = event.target.closest(".result");
     if (row) openItem(S.results[Number(row.dataset.i)]);
+  });
+  $("#results").addEventListener("mouseover", (event) => {
+    const row = event.target.closest(".result");
+    const index = row ? Number(row.dataset.i) : -1;
+    if (row && index !== S.selected) select(index, false, true);
   });
   $("#recentList").addEventListener("click", (event) => {
     const row = event.target.closest(".recent-item");
     if (!row) return;
     const item = S.boot.recent[Number(row.dataset.i)];
     if (item) {
-      S.previewItem = item;
-      previewFor(item, 0);
+      S.previewItem = null;
+      $("#previewBody").dataset.path = "";
+      previewFor(item);
     }
   });
 
@@ -161,6 +169,8 @@ function wire() {
   $("#btnAddRoot").addEventListener("click", addRoot);
   $("#btnScan").addEventListener("click", startScan);
   $("#btnCancelScan").addEventListener("click", cancelScan);
+  $("#btnGoSearch").addEventListener("click", () => nav("search"));
+  $("#btnStepSearch").addEventListener("click", () => nav("search"));
   $("#btnOpenData").addEventListener("click", async () => {
     const r = await Bridge.call("open_data_dir");
     if (!r.ok) toast(r.error || "Impossible d'ouvrir le dossier", true);
@@ -176,6 +186,7 @@ function wire() {
     S.cfg.roots.splice(Number(btn.dataset.i), 1);
     persistConfig();
     renderRoots();
+    renderIndex();
   });
   $("#threads").addEventListener("change", () => {
     S.cfg.threads = Math.max(1, Math.min(32, Number($("#threads").value) || 8));
@@ -184,6 +195,16 @@ function wire() {
   $("#excludes").addEventListener("change", () => {
     S.cfg.exclude_dirs = $("#excludes").value.split(",").map((s) => s.trim()).filter(Boolean);
     persistConfig();
+  });
+  $("#excludeExts").addEventListener("change", () => {
+    S.cfg.exclude_exts = $("#excludeExts").value.split(",").map((s) => s.trim()).filter(Boolean);
+    persistConfig();
+    updateAdvancedSummary();
+  });
+  $("#excludeNames").addEventListener("change", () => {
+    S.cfg.exclude_names = $("#excludeNames").value.split(",").map((s) => s.trim()).filter(Boolean);
+    persistConfig();
+    updateAdvancedSummary();
   });
 }
 
@@ -227,13 +248,12 @@ async function runSearch() {
     S.folders = [];
     S.selected = -1;
     $("#results").innerHTML = "";
-    $("#resultsHead").innerHTML = "";
+    renderHead();
     showEmpty(true, "search");
-    renderSearchMeta();
     return;
   }
   const data = await Bridge.call(
-    "search", S.query, S.type === "all" ? [] : [S.type], S.sort, 150
+    "search", S.query, S.type === "all" ? [] : [S.type], S.sort, 200
   );
   if (token !== S.searchToken) return;
   if (data.error) {
@@ -244,34 +264,47 @@ async function runSearch() {
   S.folders = data.folders || [];
   S.selected = -1;
   renderResults(data);
-  renderSearchMeta(data);
-  if (S.results.length) select(0, false);
+  renderHead(data);
+  if (S.results.length) select(0, false, false, 320);
 }
 
-function renderSearchMeta(data) {
-  const meta = $("#searchMeta");
+function renderHead(data) {
+  const head = $("#resultsHead");
   if (!data) {
     const total = S.boot?.stats?.files || 0;
-    meta.innerHTML = total
-      ? `Index local : <strong>${fmtInt(total)}</strong> documents et <strong>${fmtInt(S.boot.stats.dirs)}</strong> dossiers`
-      : "Aucun document indexé pour l'instant";
+    const dirs = S.boot?.stats?.dirs || 0;
+    head.innerHTML = total
+      ? `<span>Index local : <strong>${fmtInt(total)}</strong> documents · <strong>${fmtInt(dirs)}</strong> dossiers</span>`
+      : `<span>Aucun document indexé — ouvrez l'onglet <strong>Index</strong> pour commencer.</span>`;
     return;
   }
-  const parts = [`<strong>${fmtInt(S.results.length)}</strong> résultat${S.results.length > 1 ? "s" : ""}`];
-  if (S.folders.length) parts.push(`<strong>${fmtInt(S.folders.length)}</strong> dossier${S.folders.length > 1 ? "s" : ""}`);
-  parts.push(`${data.ms} ms`);
-  meta.innerHTML = parts.join(" · ");
+  const count = S.results.length;
+  head.innerHTML = `<strong>${fmtInt(count)}</strong> document${count > 1 ? "s" : ""}`
+    + (S.folders.length ? `<span class="dot"></span><strong>${fmtInt(S.folders.length)}</strong> dossier${S.folders.length > 1 ? "s" : ""}` : "")
+    + `<span class="dot"></span>${data.ms} ms`
+    + `<span class="spacer"></span><span class="index-summary">trié par ${esc($("#sort").selectedOptions[0].textContent.toLowerCase())}</span>`;
 }
 
 function renderResults(data) {
-  const head = $("#resultsHead");
   const box = $("#results");
-  const count = S.results.length;
-  head.innerHTML = count
-    ? `<strong>${fmtInt(count)}</strong> document${count > 1 ? "s" : ""}<span class="dot"></span>trié par ${esc($("#sort").selectedOptions[0].textContent.toLowerCase())}`
-    : "";
-
   let html = "";
+
+  if (S.folders.length) {
+    html += `<div class="section-label">Dossiers</div>`;
+    S.folders.forEach((folder) => {
+      html += `
+        <div class="folder-row" data-name="${esc(folder.name)}">
+          <div class="type-icon type-folder"><svg><use href="#i-folder"/></svg></div>
+          <div>
+            <div class="folder-name">${highlight(folder.name, S.query)}</div>
+            <div class="folder-path">${esc(folder.path)}</div>
+          </div>
+          <svg class="go"><use href="#i-arrow"/></svg>
+        </div>`;
+    });
+    if (S.results.length) html += `<div class="section-label">Documents</div>`;
+  }
+
   S.results.forEach((item, index) => {
     html += `
       <div class="result" data-i="${index}">
@@ -287,28 +320,8 @@ function renderResults(data) {
       </div>`;
   });
 
-  if (S.folders.length) {
-    html += `<div class="section-label">Dossiers</div>`;
-    S.folders.forEach((folder) => {
-      html += `
-        <div class="folder-row" data-name="${esc(folder.name)}">
-          <div class="type-icon type-folder"><svg><use href="#i-folder"/></svg></div>
-          <div>
-            <div class="folder-name">${highlight(folder.name, S.query)}</div>
-            <div class="folder-path">${esc(folder.path)}</div>
-          </div>
-          <svg class="go" style="width:16px;height:16px"><use href="#i-arrow"/></svg>
-        </div>`;
-    });
-  }
-
   box.innerHTML = html;
-  box.querySelectorAll(".result").forEach((row) => {
-    row.addEventListener("mouseenter", () => {
-      select(Number(row.dataset.i), false, true);
-    });
-  });
-  showEmpty(count === 0 && S.folders.length === 0, "noresult");
+  showEmpty(S.results.length === 0 && S.folders.length === 0, "noresult");
 }
 
 function showEmpty(show, mode = "search") {
@@ -317,11 +330,11 @@ function showEmpty(show, mode = "search") {
   if (!show) return;
   if (mode === "noresult") {
     $("#emptyTitle").textContent = S.query ? `Rien pour « ${S.query} »` : "Rien dans cette catégorie";
-    $("#emptyText").innerHTML = "Essaie un mot plus court, un nom de dossier,<br>ou retire le filtre de type.";
+    $("#emptyText").innerHTML = "Essayez un mot plus court, un nom de dossier,<br>ou retirez le filtre de type.";
     $("#recentBlock").hidden = true;
   } else {
-    $("#emptyTitle").textContent = "Cherche dans tout le partage";
-    $("#emptyText").innerHTML = "Tape quelques lettres pour retrouver un document.<br>Les résultats restent dans l'application, aucun navigateur.";
+    $("#emptyTitle").textContent = "Cherchez dans tout le partage";
+    $("#emptyText").innerHTML = "Tapez quelques lettres pour retrouver un document.<br>Les résultats restent dans l'application.";
     $("#recentBlock").hidden = !(S.boot?.recent?.length > 0);
   }
 }
@@ -342,117 +355,38 @@ function renderRecent() {
   $("#recentBlock").hidden = false;
 }
 
-function select(index, openPreview = false, fromHover = false) {
+function select(index, openPreview = false, fromHover = false, delay = null) {
   if (index < 0 || index >= S.results.length) return;
   S.selected = index;
   $$("#results .result").forEach((row) => {
     const active = Number(row.dataset.i) === index;
     row.classList.toggle("active", active);
-    if (active) row.scrollIntoView({ block: "nearest" });
+    if (active && !fromHover) row.scrollIntoView({ block: "nearest" });
   });
   const item = S.results[index];
-  schedulePreview(item, fromHover ? 240 : 40);
-}
-
-function schedulePreview(item, delay) {
+  const wait = delay === null ? (fromHover ? 130 : 0) : delay;
   clearTimeout(S.previewTimer);
-  S.previewTimer = setTimeout(() => previewFor(item, 0), delay);
+  S.previewTimer = setTimeout(() => previewFor(item), wait);
 }
 
 /* ---------------------------------------------------------------- aperçu */
 
-async function previewFor(item) {
-  if (!item) return;
-  if (S.previewItem && S.previewItem.path === item.path
-      && $("#previewBody").dataset.path === item.path
-      && !$("#previewBody").dataset.failed) {
-    return;
-  }
-  S.previewItem = item;
-  const token = ++S.previewToken;
-  renderPreviewLoading(item);
-
-  let result;
-  try {
-    result = await Bridge.call("preview", item.path);
-  } catch (err) {
-    result = { ok: false, error: err.message };
-  }
-  if (token !== S.previewToken) return;
-  renderPreview(result, item);
-}
-
-function renderPreviewLoading(item) {
-  const body = $("#previewBody");
-  body.dataset.path = item.path;
-  body.dataset.failed = "";
-  body.innerHTML = `
-    <div class="preview-loading">
-      <div class="skel skel-page"></div>
-      <div class="skel skel-line"></div>
-      <div class="skel skel-line short"></div>
+function previewFacts(item) {
+  return `<div class="preview-facts">
+      <span class="fact">${esc(item.size_human)}</span>
+      ${item.date ? `<span class="fact">${esc(item.date)}</span>` : ""}
     </div>`;
-  $("#previewFlag").textContent = "Première page…";
-  $("#previewActions").innerHTML = "";
 }
 
-function renderPreview(result, item) {
-  const body = $("#previewBody");
+function renderPreviewDoc(item) {
+  $("#previewDoc").innerHTML = `
+    <div class="preview-name">${esc(item.name)}</div>
+    <div class="preview-sub">${esc(item.folder)}</div>
+    ${previewFacts(item)}`;
+}
+
+function renderActions(item) {
   const actions = $("#previewActions");
-  body.dataset.path = item.path;
-  const factSize = `<span class="fact">${esc(item.size_human)}</span>`;
-  const factDate = item.date ? `<span class="fact">${esc(item.date)}</span>` : "";
-  const facts = `<div class="preview-facts">${factSize}${factDate}</div>`;
-
-  if (!result || !result.ok) {
-    body.dataset.failed = "1";
-    body.innerHTML = `
-      <div class="preview-error">
-        <svg><use href="#i-doc"/></svg>
-        <div>${esc(result?.error || "Aperçu indisponible")}</div>
-        <div style="margin-top:6px;font-size:10.5px">Le document peut quand même être ouvert.</div>
-      </div>`;
-    $("#previewFlag").textContent = "";
-  } else if (result.kind === "image") {
-    body.innerHTML = `
-      <div class="paper-frame">
-        <img class="paper-img" alt="Première page de ${esc(item.name)}"
-             src="data:image/jpeg;base64,${result.data}">
-      </div>
-      <div class="preview-meta">
-        <div class="preview-name">${esc(item.name)}</div>
-        <div class="preview-sub">${esc(item.folder)}</div>
-        ${facts}
-      </div>`;
-    const src = result.source === "pdf" ? "PDF" : result.source === "image" ? "Image" : "Office";
-    $("#previewFlag").innerHTML = result.cached
-      ? `<span class="spark">●</span> page 1 · ${src} · cache`
-      : `page 1 · ${src} · ${result.ms} ms`;
-  } else {
-    const table = (result.table || []).length
-      ? `<table class="paper-table">${result.table.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join("")}</tr>`).join("")}</table>`
-      : "";
-    const text = result.text
-      ? `<p class="paper-text">${esc(result.text)}</p>`
-      : "";
-    body.innerHTML = `
-      <div class="paper-frame">
-        <div class="paper">
-          <div class="paper-title">${esc(result.title || item.name)}</div>
-          <div class="paper-rule"></div>
-          ${text}${table}
-          ${result.note ? `<div class="paper-note">${esc(result.note)}</div>` : ""}
-          <div class="paper-sheetmeta"><span>Abionic · DocSearch</span><span>Page 1</span></div>
-        </div>
-      </div>
-      <div class="preview-meta">
-        <div class="preview-name">${esc(item.name)}</div>
-        <div class="preview-sub">${esc(item.folder)}</div>
-        ${facts}
-      </div>`;
-    $("#previewFlag").textContent = result.note ? "Reconstruit" : `Texte · ${result.ms} ms`;
-  }
-
   actions.innerHTML = `
     <button class="btn primary small" id="pOpen"><svg><use href="#i-external"/></svg> Ouvrir</button>
     <button class="btn ghost small" id="pReveal"><svg><use href="#i-folder"/></svg> Dossier</button>
@@ -468,6 +402,115 @@ function renderPreview(result, item) {
   });
 }
 
+function renderSkeleton() {
+  $("#previewBody").innerHTML = `
+    <div class="preview-loading">
+      <div class="skel skel-page"></div>
+      <div class="skel skel-line"></div>
+      <div class="skel skel-line short"></div>
+    </div>`;
+}
+
+async function previewFor(item) {
+  if (!item) return;
+  const body = $("#previewBody");
+  if (S.previewItem?.path === item.path && body.dataset.path === item.path && !body.dataset.failed) {
+    return;
+  }
+  S.previewItem = item;
+  const token = ++S.previewToken;
+
+  // Les infos et les boutons sont affichés avant tout rendu.
+  renderPreviewDoc(item);
+  renderActions(item);
+  body.dataset.path = item.path;
+  body.dataset.failed = "";
+  renderSkeleton();
+  $("#previewFlag").textContent = "préparation…";
+
+  let fast;
+  try {
+    fast = await Bridge.call("preview_fast", item.path);
+  } catch (err) {
+    fast = { ok: false, error: err.message };
+  }
+  if (token !== S.previewToken) return;
+
+  if (!fast || !fast.ok) {
+    let full;
+    try {
+      full = await Bridge.call("preview", item.path, "full");
+    } catch (err) {
+      full = { ok: false, error: err.message };
+    }
+    if (token !== S.previewToken) return;
+    if (full && full.ok) renderPreviewBody(full, item, "full");
+    else renderPreviewError(full);
+    return;
+  }
+
+  renderPreviewBody(fast, item, "fast");
+
+  // Word / Excel / PowerPoint : le texte arrive tout de suite, la vraie page suit.
+  const isOffice = ["word", "excel", "ppt"].includes(item.kind);
+  if (fast.kind === "text" && isOffice && S.boot?.office) {
+    $("#previewFlag").innerHTML = `texte immédiat · page réelle en cours…`;
+    let full;
+    try {
+      full = await Bridge.call("preview", item.path, "full");
+    } catch (err) {
+      full = null;
+    }
+    if (token !== S.previewToken) return;
+    if (full && full.ok) renderPreviewBody(full, item, "full");
+    else $("#previewFlag").textContent = "aperçu texte";
+  }
+}
+
+function renderPreviewBody(result, item) {
+  const body = $("#previewBody");
+  body.dataset.path = item.path;
+
+  if (result.kind === "image") {
+    body.innerHTML = `
+      <div class="paper-frame">
+        <img class="paper-img" alt="Première page de ${esc(item.name)}"
+             src="data:image/jpeg;base64,${result.data}">
+      </div>`;
+    const src = result.source === "pdf" ? "PDF" : result.source === "image" ? "Image" : "Office";
+    $("#previewFlag").innerHTML = `${result.cached ? '<span class="spark">●</span> ' : ""}page 1 · ${src} · ${result.ms} ms`;
+    return;
+  }
+
+  const table = (result.table || []).length
+    ? `<table class="paper-table">${result.table.map((row) => `<tr>${row.map((cell) => `<td>${esc(cell)}</td>`).join("")}</tr>`).join("")}</table>`
+    : "";
+  const text = result.text ? `<p class="paper-text">${esc(result.text)}</p>` : "";
+  body.innerHTML = `
+    <div class="paper-frame">
+      <div class="paper">
+        <div class="paper-title">${esc(result.title || item.name)}</div>
+        <div class="paper-rule"></div>
+        ${text}${table}
+        ${result.note ? `<div class="paper-note">${esc(result.note)}</div>` : ""}
+        <div class="paper-sheetmeta"><span>Abionic · DocSearch</span><span>Page 1</span></div>
+      </div>
+    </div>`;
+  $("#previewFlag").textContent = result.note ? "aperçu texte" : `texte · ${result.ms} ms`;
+}
+
+function renderPreviewError(result) {
+  const body = $("#previewBody");
+  body.dataset.failed = "1";
+  body.innerHTML = `
+    <div class="preview-error">
+      <svg><use href="#i-doc"/></svg>
+      <div>${esc(result?.error || "Aperçu indisponible pour ce document.")}</div>
+      <div style="margin-top:6px;font-size:10.5px">Vous pouvez quand même l'ouvrir avec le bouton ci-dessous.</div>
+    </div>`;
+  $("#previewFlag").textContent = "";
+}
+
 async function openItem(item) {
   if (!item) return;
   const r = await Bridge.call("open_file", item.path);
@@ -479,21 +522,48 @@ async function openItem(item) {
 function renderIndex() {
   if (!S.boot) return;
   const stats = S.boot.stats;
-  $("#statFiles").textContent = stats.files ? fmtInt(stats.files) : "0";
-  $("#statDirs").textContent = stats.dirs ? fmtInt(stats.dirs) : "0";
-  $("#statSize").textContent = stats.size_human || "0 o";
-  $("#statLast").textContent = stats.last_scan ? fmtDate(stats.last_scan).split(" à ")[0] : "Jamais";
-  $("#statLastFoot").textContent = stats.last_scan ? fmtDate(stats.last_scan).split(" à ")[1] : "Lance une première analyse";
-  $("#statFilesFoot").textContent = stats.files ? "noms et dossiers" : "index vide";
-  $("#statDirsFoot").textContent = stats.dirs ? "dans l'arborescence" : "—";
-  $("#statSizeFoot").textContent = "catalogués, non copiés";
-  $("#scanRootsCount").textContent = fmtInt(S.cfg.roots.length);
+
+  $("#statLine").innerHTML = [
+    `<span class="mini-stat"><strong>${fmtInt(stats.files)}</strong> documents</span>`,
+    `<span class="mini-stat"><strong>${fmtInt(stats.dirs)}</strong> dossiers</span>`,
+    `<span class="mini-stat"><strong>${esc(stats.size_human || "0 o")}</strong></span>`,
+    `<span class="mini-stat">${stats.last_scan ? "analysé le " + esc(fmtDate(stats.last_scan).split(" à ")[0]) : "jamais analysé"}</span>`,
+  ].join("");
+
+  const step = $("#nextStep");
+  const text = $("#nextStepText");
+  step.classList.remove("warn", "ready");
+  if (stats.files) {
+    step.classList.add("ready");
+    text.innerHTML = "<strong>Votre index est prêt.</strong> Ouvrez l'onglet « Rechercher » et tapez le nom d'un document.";
+  } else if (!S.cfg.roots.length) {
+    step.classList.add("warn");
+    text.innerHTML = "<strong>Commencez ici :</strong> cliquez sur « Ajouter un dossier » pour choisir l'endroit où se trouvent vos documents.";
+  } else {
+    step.classList.add("ready");
+    text.innerHTML = "<strong>Tout est prêt.</strong> Cliquez sur « Analyser maintenant » : l'opération ne modifie rien et prend quelques secondes.";
+  }
+
+  const hasRoots = S.cfg.roots.length > 0;
+  $("#btnScan").disabled = !hasRoots;
+  $("#scanHint").textContent = hasRoots
+    ? `${fmtInt(S.cfg.roots.length)} dossier(s) prêt(s). L'analyse ne modifie rien.`
+    : "Ajoutez d'abord un dossier à l'étape 1.";
+  updateAdvancedSummary();
+}
+
+function updateAdvancedSummary() {
+  const sub = document.querySelector("#advanced .adv-sub");
+  if (!sub) return;
+  const exts = (S.cfg.exclude_exts || []).length;
+  const names = (S.cfg.exclude_names || []).length;
+  sub.textContent = `${fmtInt(exts)} extensions et ${fmtInt(names)} noms ignorés · dossiers exclus · cache · dossier de données`;
 }
 
 function renderRoots() {
   const box = $("#roots");
   if (!S.cfg.roots.length) {
-    box.innerHTML = `<div class="roots-empty">Aucun dossier pour l'instant.<br>Ajoute le lecteur réseau du service.</div>`;
+    box.innerHTML = `<div class="roots-empty">Aucun dossier choisi pour l'instant.<br>Utilisez le bouton ci-dessus.</div>`;
     return;
   }
   box.innerHTML = S.cfg.roots.map((root, index) => `
@@ -519,6 +589,8 @@ function renderRoots() {
 function fillSettings() {
   $("#threads").value = S.cfg.threads || 8;
   $("#excludes").value = (S.cfg.exclude_dirs || []).join(", ");
+  $("#excludeExts").value = (S.cfg.exclude_exts || []).join(", ");
+  $("#excludeNames").value = (S.cfg.exclude_names || []).join(", ");
 }
 
 async function addRoot() {
@@ -530,7 +602,7 @@ async function addRoot() {
   });
   await persistConfig();
   renderRoots();
-  $("#scanRootsCount").textContent = fmtInt(S.cfg.roots.length);
+  renderIndex();
 }
 
 async function persistConfig() {
@@ -538,6 +610,8 @@ async function persistConfig() {
     await Bridge.call("save_config", {
       roots: S.cfg.roots,
       exclude_dirs: S.cfg.exclude_dirs,
+      exclude_exts: S.cfg.exclude_exts,
+      exclude_names: S.cfg.exclude_names,
       threads: S.cfg.threads,
     });
   } catch (err) {
@@ -547,8 +621,7 @@ async function persistConfig() {
 
 async function startScan() {
   if (!S.cfg.roots.length) {
-    toast("Ajoute d'abord un dossier à analyser", true);
-    nav("index");
+    toast("Ajoutez d'abord un dossier à analyser", true);
     return;
   }
   const r = await Bridge.call("start_scan", S.cfg.roots);
@@ -588,10 +661,10 @@ async function pollScan() {
     } else {
       const res = st.result || {};
       $("#doneTitle").textContent = res.cancelled ? "Analyse arrêtée" : "Analyse terminée";
+      const ignored = res.ignored ? ` · ${fmtInt(res.ignored)} fichiers ignorés` : "";
       $("#doneText").innerHTML = res.cancelled
-        ? `${fmtInt(res.files || 0)} documents dans l'index. Le scan reprendra au prochain lancement.`
-        : `${fmtInt(res.files || 0)} documents · ${fmtInt(res.dirs || 0)} dossiers · ${res.elapsed || 0} s`
-          + (res.errors ? ` · ${res.errors} dossiers illisibles` : "");
+        ? `${fmtInt(res.files || 0)} documents dans l'index. Vous pourrez relancer l'analyse plus tard.`
+        : `${fmtInt(res.files || 0)} documents · ${fmtInt(res.dirs || 0)} dossiers · ${res.elapsed || 0} s${ignored}`;
       toast(res.cancelled ? "Analyse arrêtée" : "Index à jour");
       await refreshBoot();
     }
@@ -612,7 +685,7 @@ async function refreshBoot() {
   S.boot = await Bridge.call("bootstrap");
   S.cfg = S.boot.config || S.cfg;
   renderChip();
-  renderSearchMeta();
+  renderHead();
   renderRecent();
   renderRoots();
   renderIndex();
@@ -653,7 +726,7 @@ function onKey(event) {
     event.preventDefault();
     const delta = event.key === "ArrowDown" ? 1 : -1;
     const next = Math.max(0, Math.min(S.results.length - 1, S.selected + delta));
-    select(next, true);
+    select(next, false, false, 0);
     return;
   }
   if (event.key === "Enter" && S.selected >= 0 && !inInput) {

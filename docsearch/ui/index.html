@@ -24,12 +24,13 @@
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
   <symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 13h9l1-13"/></symbol>
   <symbol id="i-doc" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6Z"/><path d="M14 3v4h4M9 12h6M9 15.5h6M9 8.5h2"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l7 3v6c0 4.5-3 8-7 9-4-1-7-4.5-7-9V6Z"/><path d="m9 12 2 2 4-4"/></symbol>
 </svg>
 
 <header class="topbar">
   <div class="topbar-left">
     <a class="brand" href="#" data-nav="search" aria-label="Abionic DocSearch">
-      <img src="assets/logo-white.svg" alt="Abionic" height="26">
+      <img src="assets/logo-white.svg" alt="Abionic" height="24">
       <span class="brand-sep"></span>
       <span class="brand-product">DocSearch</span>
     </a>
@@ -49,50 +50,41 @@
 <main>
   <!-- ------------------------------------------------------------ RECHERCHE -->
   <section class="view active" id="view-search">
-    <div class="hero">
-      <div class="hero-blob hero-blob-a"></div>
-      <div class="hero-blob hero-blob-b"></div>
-      <div class="hero-inner">
-        <p class="eyebrow"><span class="eyebrow-dot"></span> Le catalogue du service</p>
-        <h1>Retrouve le bon document,<br>en quelques secondes.</h1>
-        <p class="hero-sub">Noms de fichiers et de dossiers du partage, indexés localement sur ce poste.</p>
-      </div>
-      <div class="search-wrap">
+    <div class="toolbar">
+      <div class="search-row">
         <div class="searchbar" id="searchbar">
           <svg class="search-icon"><use href="#i-search"/></svg>
           <input id="q" type="text" autocomplete="off" spellcheck="false"
-                 placeholder="Un nom de document, un dossier, quelques mots…"
+                 placeholder="Nom du document, dossier, quelques mots…"
                  aria-label="Rechercher un document">
           <kbd class="kbd">Ctrl K</kbd>
-          <button class="btn-search" id="btnSearch">Rechercher</button>
+          <button class="btn-search" id="btnSearch">Chercher</button>
         </div>
-        <div class="search-meta" id="searchMeta"></div>
+      </div>
+      <div class="filter-row">
+        <div class="chips" id="typeChips">
+          <button class="chip active" data-type="all">Tous</button>
+          <button class="chip" data-type="pdf">PDF</button>
+          <button class="chip" data-type="word">Word</button>
+          <button class="chip" data-type="excel">Excel</button>
+          <button class="chip" data-type="ppt">PowerPoint</button>
+          <button class="chip" data-type="image">Images</button>
+          <button class="chip" data-type="text">Texte</button>
+        </div>
+        <label class="sort">
+          <span>Trier</span>
+          <select id="sort">
+            <option value="relevance">Pertinence</option>
+            <option value="date">Plus récents</option>
+            <option value="name">Nom A–Z</option>
+            <option value="size">Taille</option>
+          </select>
+        </label>
       </div>
     </div>
 
     <div class="workspace">
       <section class="results-pane">
-        <div class="filters">
-          <div class="chips" id="typeChips">
-            <button class="chip active" data-type="all">Tous</button>
-            <button class="chip" data-type="pdf">PDF</button>
-            <button class="chip" data-type="word">Word</button>
-            <button class="chip" data-type="excel">Excel</button>
-            <button class="chip" data-type="ppt">PowerPoint</button>
-            <button class="chip" data-type="image">Images</button>
-            <button class="chip" data-type="text">Texte</button>
-          </div>
-          <label class="sort">
-            <span>Trier</span>
-            <select id="sort">
-              <option value="relevance">Pertinence</option>
-              <option value="date">Plus récents</option>
-              <option value="name">Nom A–Z</option>
-              <option value="size">Taille</option>
-            </select>
-          </label>
-        </div>
-
         <div class="results-head" id="resultsHead"></div>
         <div class="results-scroll" id="resultsScroll">
           <div class="results" id="results"></div>
@@ -103,7 +95,7 @@
               <div class="empty-sheet s3"><svg><use href="#i-doc"/></svg></div>
             </div>
             <h2 id="emptyTitle">Cherche dans tout le partage</h2>
-            <p id="emptyText">Tape quelques lettres pour retrouver un document.<br>Les résultats restent dans l'application, aucun navigateur.</p>
+            <p id="emptyText">Tape quelques lettres pour retrouver un document.<br>Les résultats restent dans l'application.</p>
             <div class="recent-block" id="recentBlock">
               <p class="recent-label">Derniers documents indexés</p>
               <div class="recent-list" id="recentList"></div>
@@ -113,16 +105,17 @@
       </section>
 
       <aside class="preview-pane" id="previewPane">
-        <div class="preview-card" id="previewCard">
+        <div class="preview-card">
           <div class="preview-head">
             <span class="preview-label">Aperçu</span>
             <span class="preview-flag" id="previewFlag"></span>
           </div>
+          <div class="preview-doc" id="previewDoc"></div>
           <div class="preview-body" id="previewBody">
-            <div class="preview-idle" id="previewIdle">
+            <div class="preview-idle">
               <div class="idle-icon"><svg><use href="#i-doc"/></svg></div>
-              <p>Survole un document<br>pour voir sa première page.</p>
-              <span class="idle-hint">Le fichier reste sur le partage : rien n'est copié.</span>
+              <p>Survolez un document<br>pour voir sa première page.</p>
+              <span class="idle-hint">Les boutons Ouvrir et Dossier<br>apparaissent dès la sélection.</span>
             </div>
           </div>
           <div class="preview-actions" id="previewActions"></div>
@@ -132,45 +125,53 @@
   </section>
 
   <!-- ---------------------------------------------------------------- INDEX -->
-  <section class="view" id="view-index">
+  <section class="view page" id="view-index">
     <div class="page-head">
       <div>
         <p class="eyebrow"><span class="eyebrow-dot"></span> Index local</p>
-        <h1>Le partage, en un coup d'œil</h1>
-        <p class="page-sub">Choisis les dossiers à analyser. L'index reste sur ce poste et se met à jour en quelques secondes.</p>
+        <h1>Préparer la recherche</h1>
+        <p class="page-sub">Deux étapes pour préparer l'index, puis la recherche.</p>
       </div>
-      <div class="head-actions">
-        <button class="btn ghost" id="btnOpenData"><svg><use href="#i-folder"/></svg> Dossier de données</button>
-        <button class="btn primary" id="btnScan"><svg><use href="#i-scan"/></svg> Lancer l'analyse</button>
-      </div>
+      <div class="mini-stats" id="statLine"></div>
     </div>
 
-    <div class="stat-row">
-      <div class="stat-card"><span class="stat-label">Documents</span><strong id="statFiles">—</strong><span class="stat-foot" id="statFilesFoot">&nbsp;</span></div>
-      <div class="stat-card"><span class="stat-label">Dossiers</span><strong id="statDirs">—</strong><span class="stat-foot" id="statDirsFoot">&nbsp;</span></div>
-      <div class="stat-card"><span class="stat-label">Taille cataloguée</span><strong id="statSize">—</strong><span class="stat-foot" id="statSizeFoot">&nbsp;</span></div>
-      <div class="stat-card accent"><span class="stat-label">Dernière analyse</span><strong id="statLast">—</strong><span class="stat-foot" id="statLastFoot">&nbsp;</span></div>
+    <div class="next-step" id="nextStep">
+      <span class="next-dot"></span>
+      <span id="nextStepText">Commencez par ajouter le dossier où se trouvent vos documents.</span>
     </div>
 
-    <div class="index-grid">
-      <div class="panel">
-        <div class="panel-head">
-          <div><h2>Dossiers analysés</h2><p>Ajoute un lecteur réseau, un dossier partagé ou un dossier local.</p></div>
-          <button class="btn ghost small" id="btnAddRoot"><svg><use href="#i-plus"/></svg> Ajouter un dossier</button>
+    <div class="steps">
+      <article class="step-card">
+        <div class="step-top">
+          <span class="step-num">1</span>
+          <div>
+            <h2>Choisissez les dossiers à analyser</h2>
+            <p>Ce sont les dossiers qui contiennent vos documents : un lecteur réseau, un dossier partagé ou un dossier de votre PC. Vous pouvez en ajouter plusieurs.</p>
+          </div>
         </div>
+        <button class="drop-btn" id="btnAddRoot">
+          <svg><use href="#i-plus"/></svg>
+          <span>Ajouter un dossier</span>
+        </button>
         <div class="roots" id="roots"></div>
-        <div class="scan-opts">
-          <label class="field"><span>Fils de lecture</span><input id="threads" type="number" min="1" max="32" value="8"></label>
-          <label class="field wide"><span>Dossiers exclus (séparés par des virgules)</span><input id="excludes" type="text" placeholder="__old, $RECYCLE.BIN"></label>
-        </div>
-      </div>
+        <p class="step-hint">Rien n'est copié ni modifié : l'application lit seulement les noms.</p>
+      </article>
 
-      <div class="panel scan-panel">
-        <div class="panel-head"><div><h2>Analyse</h2><p>Parcours des noms uniquement : aucun document n'est ouvert.</p></div></div>
+      <article class="step-card">
+        <div class="step-top">
+          <span class="step-num">2</span>
+          <div>
+            <h2>Lancez l'analyse</h2>
+            <p>L'application parcourt les dossiers choisis et note les noms des documents. Cela prend quelques secondes, quelques minutes sur un gros partage.</p>
+          </div>
+        </div>
+        <button class="btn primary big" id="btnScan">
+          <svg><use href="#i-scan"/></svg>
+          <span>Analyser maintenant</span>
+        </button>
+
         <div id="scanIdle" class="scan-idle">
-          <div class="scan-ring"><svg><use href="#i-scan"/></svg></div>
-          <p>Prêt à parcourir <strong id="scanRootsCount">0</strong> dossier(s).</p>
-          <span>Un partage de 200 000 fichiers prend une quinzaine de secondes.</span>
+          <p id="scanHint">Ajoutez d'abord un dossier à l'étape 1.</p>
         </div>
         <div id="scanRun" class="scan-run" hidden>
           <div class="scan-numbers">
@@ -186,23 +187,74 @@
           <div class="done-icon"><svg><use href="#i-check"/></svg></div>
           <h3 id="doneTitle">Analyse terminée</h3>
           <p id="doneText"></p>
+          <button class="btn ghost small" id="btnGoSearch">Aller à la recherche</button>
         </div>
-      </div>
+      </article>
+
+      <article class="step-card final">
+        <div class="step-top">
+          <span class="step-num soft">3</span>
+          <div>
+            <h2>Cherchez vos documents</h2>
+            <p>Une fois l'analyse terminée, ouvrez l'onglet Rechercher et tapez un nom. La première page s'affiche au survol ; un double-clic ouvre le fichier.</p>
+          </div>
+        </div>
+        <button class="btn ghost" id="btnStepSearch">Ouvrir la recherche</button>
+      </article>
     </div>
 
-    <div class="panel cache-panel">
-      <div>
-        <h2>Cache d'aperçus</h2>
-        <p id="cacheText">—</p>
+    <details class="advanced" id="advanced">
+      <summary>
+        <span class="adv-title">Options avancées</span>
+        <span class="adv-sub">Fichiers ignorés, dossiers exclus, cache, dossier de données</span>
+      </summary>
+
+      <div class="adv-body">
+        <section class="adv-block">
+          <div class="adv-head">
+            <div>
+              <h3>Fichiers ignorés</h3>
+              <p>Ces fichiers ne sont pas indexés et n'apparaissent jamais dans les résultats. Retire une ligne pour les réintégrer, puis relance l'analyse.</p>
+            </div>
+          </div>
+          <label class="field">
+            <span>Extensions ignorées (séparées par des virgules)</span>
+            <input id="excludeExts" type="text" placeholder=".zip, .exe, .tmp">
+          </label>
+          <label class="field">
+            <span>Noms ignorés — les jokers * sont acceptés</span>
+            <input id="excludeNames" type="text" placeholder="~$*, thumbs.db">
+          </label>
+          <p class="adv-hint">Par défaut : archives (zip, rar, 7z), exécutables, fichiers système, temporaires et fichiers de verrouillage Office.</p>
+        </section>
+
+        <section class="adv-block two">
+          <label class="field">
+            <span>Fils de lecture</span>
+            <input id="threads" type="number" min="1" max="32" value="8">
+          </label>
+          <label class="field">
+            <span>Dossiers exclus (séparés par des virgules)</span>
+            <input id="excludes" type="text" placeholder="__old, $RECYCLE.BIN">
+          </label>
+        </section>
+
+        <section class="adv-block cache-line">
+          <div>
+            <h3>Cache d'aperçus</h3>
+            <p id="cacheText">—</p>
+          </div>
+          <div class="head-actions">
+            <button class="btn ghost small" id="btnClearCache"><svg><use href="#i-trash"/></svg> Vider le cache</button>
+            <button class="btn ghost small" id="btnOpenData"><svg><use href="#i-folder"/></svg> Dossier de données</button>
+          </div>
+        </section>
       </div>
-      <div class="head-actions">
-        <button class="btn ghost small" id="btnClearCache"><svg><use href="#i-trash"/></svg> Vider le cache</button>
-      </div>
-    </div>
+    </details>
   </section>
 
   <!-- ----------------------------------------------------------------- AIDE -->
-  <section class="view" id="view-help">
+  <section class="view page" id="view-help">
     <div class="page-head">
       <div>
         <p class="eyebrow"><span class="eyebrow-dot"></span> Mode d'emploi</p>
@@ -211,9 +263,9 @@
       </div>
     </div>
     <div class="help-grid">
-      <article class="help-card"><span class="help-num">01</span><h3>Analyser le partage</h3><p>Onglet <strong>Index</strong>, « Ajouter un dossier », choisis le lecteur réseau, puis « Lancer l'analyse ». À refaire quand les fichiers changent : le scan incrémental ne relit que les noms.</p></article>
+      <article class="help-card"><span class="help-num">01</span><h3>Analyser le partage</h3><p>Onglet <strong>Index</strong>, « Ajouter un dossier », choisissez le lecteur réseau, puis « Analyser maintenant ». À refaire quand les fichiers changent.</p></article>
       <article class="help-card"><span class="help-num">02</span><h3>Chercher</h3><p>Tape un nom, un dossier ou quelques mots. Les accents et les majuscules n'ont pas d'importance. Filtre par type avec les pastilles.</p></article>
-      <article class="help-card"><span class="help-num">03</span><h3>Prévisualiser</h3><p>Survole un résultat : la première page s'affiche à droite. Double-clic ou <kbd>Entrée</kbd> ouvre le document dans Office ou le lecteur PDF.</p></article>
+      <article class="help-card"><span class="help-num">03</span><h3>Prévisualiser</h3><p>Survolez un résultat : la première page s'affiche à droite. Double-clic ou <kbd>Entrée</kbd> ouvre le document dans Office ou le lecteur PDF.</p></article>
     </div>
     <div class="panel shortcuts">
       <h2>Raccourcis</h2>
