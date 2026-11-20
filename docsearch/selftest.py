@@ -17,7 +17,9 @@ import traceback
 from pathlib import Path
 
 
-def run() -> int:
+def run(require_ui: bool | None = None) -> int:
+    if require_ui is None:
+        require_ui = ("--self-test" in sys.argv) or (not getattr(sys, "frozen", False))
     root = Path(tempfile.mkdtemp(prefix="abiods-selftest-"))
     os.environ["DOCSEARCH_DATA"] = str(root / "data")
     lines: list[str] = [f"Abionic DocSearch — auto-test ({sys.platform})"]
@@ -33,9 +35,10 @@ def run() -> int:
         from .paths import VERSION, data_dir, ui_dir
 
         check("version", bool(VERSION), VERSION)
-        check("interface embarquée", (ui_dir() / "index.html").exists(), str(ui_dir()))
-        check("feuille de style", (ui_dir() / "styles.css").exists())
-        check("police", (ui_dir() / "assets" / "sg-latin.woff2").exists())
+        if require_ui:
+            check("interface embarquée", (ui_dir() / "index.html").exists(), str(ui_dir()))
+            check("feuille de style", (ui_dir() / "styles.css").exists())
+            check("police", (ui_dir() / "assets" / "sg-latin.woff2").exists())
 
         import fitz
         import docx
@@ -77,8 +80,13 @@ def run() -> int:
             import webview  # noqa: F401
 
             check("pywebview", True)
+            if require_ui and sys.platform == "win32":
+                import clr  # noqa: F401
+                from webview.platforms import edgechromium  # noqa: F401
+
+                check("WebView2 / pythonnet", True)
         except ImportError as exc:
-            if "--self-test" in sys.argv:
+            if require_ui:
                 raise
             check("pywebview (facultatif en CLI)", False, str(exc))
     except BaseException:

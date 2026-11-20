@@ -35,7 +35,7 @@ def run() -> int:
     if "--self-test" in sys.argv:
         from docsearch.selftest import run as selftest
 
-        return selftest()
+        return selftest(require_ui=True)
 
     from docsearch.app import main
 
