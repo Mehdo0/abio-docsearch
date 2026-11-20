@@ -1,0 +1,18 @@
+ABIONIC DOCSEARCH
+=================
+
+1. Decompresse le dossier ou tu veux (Bureau, Documents...).
+2. Double-clique AbionicDocSearch.exe.
+3. Onglet "Index" -> "Ajouter un dossier" -> choisis le lecteur reseau
+   (par exemple T:\ ou \\srv-file\abioSERVER) -> "Lancer l'analyse".
+4. Onglet "Rechercher" : tape un nom, survole un resultat pour voir la
+   premiere page, double-clique pour ouvrir le document.
+
+Aucune installation, aucun droit administrateur.
+Les donnees (index et apercus) restent sur ce poste, dans le dossier "data"
+a cote de l'executable.
+
+Si Windows affiche "Windows a protege votre PC" : "Informations
+complementaires" puis "Executer quand meme". L'executable n'est pas signe.
+
+En cas de probleme, le journal est dans data\crash.log.

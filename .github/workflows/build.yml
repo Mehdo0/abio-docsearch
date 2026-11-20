@@ -1,0 +1,95 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    name: Tests et exécutables Windows
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt pyinstaller
+
+      - name: Tests
+        run: pytest -q
+
+      - name: Exécutable graphique
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed `
+            --name AbionicDocSearch `
+            --icon docsearch/ui/assets/favicon.ico `
+            --version-file packaging/version_info.txt `
+            --add-data "docsearch/ui;docsearch/ui" `
+            --hidden-import webview.platforms.edgechromium `
+            --hidden-import webview.platforms.winforms `
+            --hidden-import pythoncom `
+            --hidden-import win32com.client `
+            --hidden-import win32timezone `
+            --collect-submodules win32com `
+            --collect-all webview `
+            launcher_gui.py
+
+      - name: Exécutable ligne de commande
+        run: |
+          pyinstaller --noconfirm --clean --onefile --console `
+            --name abio-docsearch-cli `
+            --version-file packaging/version_info.txt `
+            launcher_cli.py
+
+      - name: Paquet de distribution
+        run: |
+          New-Item -ItemType Directory -Force dist\package | Out-Null
+          Copy-Item dist\AbionicDocSearch.exe dist\package\
+          Copy-Item dist\abio-docsearch-cli.exe dist\package\
+          Copy-Item packaging\LISEZMOI.txt dist\package\
+          Compress-Archive -Path dist\package\* -DestinationPath dist\AbionicDocSearch-windows.zip -Force
+          Get-FileHash dist\AbionicDocSearch-windows.zip -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  AbionicDocSearch-windows.zip" } |
+            Set-Content dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AbionicDocSearch-windows
+          path: |
+            dist/AbionicDocSearch-windows.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
+
+      - name: Publier la version
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/AbionicDocSearch-windows.zip
+            dist/SHA256SUMS.txt
+          generate_release_notes: true
+          body: |
+            Application de bureau **Abionic DocSearch**.
+
+            Télécharge `AbionicDocSearch-windows.zip`, décompresse-le où tu veux,
+            puis double-clique `AbionicDocSearch.exe`. Aucun droit administrateur,
+            aucune installation.
+
+            Le même dossier contient `abio-docsearch-cli.exe` pour les scripts.

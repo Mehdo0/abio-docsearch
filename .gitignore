@@ -1,0 +1,22 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.spec.bak
+
+# --- Données locales ---
+data/
+*.db
+*.db-wal
+*.db-shm
+previews/
+scan-errors.log
+
+# --- OS / éditeurs ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
