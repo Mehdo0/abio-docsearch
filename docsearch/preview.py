@@ -412,6 +412,21 @@ def office_available() -> bool:
     return os.name == "nt" and not any(v >= 3 for v in _com_failures.values())
 
 
+def _office_source(src: str) -> tuple[str, Path | None]:
+    """Office ne lit pas les chemins de plus de 260 caractères : copie temporaire."""
+    if len(io_path(src)) < 240:
+        return src, None
+    fd, name = tempfile.mkstemp(prefix="abiods-", suffix=Path(src).suffix)
+    os.close(fd)
+    copy = Path(name)
+    try:
+        shutil.copyfile(io_path(src), copy)
+    except OSError:
+        copy.unlink(missing_ok=True)
+        raise
+    return str(copy), copy
+
+
 def _convert_with_timeout(ext: str, src: str, dst: str, timeout: int = OFFICE_TIMEOUT) -> bool:
     if os.name != "nt" or _com_unavailable(ext):
         return False
@@ -421,11 +436,18 @@ def _convert_with_timeout(ext: str, src: str, dst: str, timeout: int = OFFICE_TI
     errors: list[BaseException] = []
 
     def run() -> None:
+        source, copy = src, None
         try:
-            _office_to_pdf(ext, src, dst)
+            source, copy = _office_source(src)
+            _office_to_pdf(ext, source, dst)
         except BaseException as exc:  # COM lève des erreurs très variées
             errors.append(exc)
         finally:
+            if copy is not None:
+                try:
+                    copy.unlink()
+                except OSError:
+                    pass
             done.set()
             _com_lock.release()
 
