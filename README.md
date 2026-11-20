@@ -13,14 +13,20 @@ une recherche instantanée.
 - **Indexe les noms** de fichiers et de dossiers d'un ou plusieurs partages
   (lecteur réseau, dossier local). Aucun document n'est ouvert pendant le
   scan : 200 000 fichiers prennent une quinzaine de secondes.
+- **Ignore par défaut** les archives (zip, rar, 7z…), les exécutables, les
+  fichiers système et temporaires, et les fichiers de verrouillage Office
+  (`~$…`). La liste est visible et modifiable dans les options avancées.
 - **Cherche en moins d'une milliseconde**, sans tenir compte des accents ni
   des majuscules, avec recherche par préfixe et par phrase entre guillemets.
   `calib` trouve `abioCALIB`, `definitif` trouve `définitif`.
 - **Prévisualise la première page au survol** :
   - PDF et images : rendu réel de la page ;
-  - Word, Excel, PowerPoint : conversion par l'Office installé sur le poste,
-    puis rendu de la page 1 ;
-  - si Office ne répond pas : reconstruction lisible à partir du texte.
+  - Word, Excel, PowerPoint : le texte s'affiche immédiatement, puis la vraie
+    page arrive dès que l'Office du poste a fini la conversion ;
+  - si Office ne répond pas : la page texte reste affichée.
+- **Résiste aux fichiers abîmés** : les DOCX dont le conteneur est incohérent
+  sont lus directement dans leur XML, les CSV/WebP sont gérés, les tableaux
+  Word, Excel et PowerPoint sont extraits.
 - **Ouvre le document** dans Office ou le lecteur PDF, affiche son dossier
   dans l'Explorateur, copie son chemin.
 - **Garde tout en local** : l'index et le cache d'aperçus restent sur le
@@ -28,12 +34,12 @@ une recherche instantanée.
 
 | Index local | Aperçu Word |
 | --- | --- |
-| ![Index](docs/ecran-index.png) | ![Aperçu](docs/ecran-apercu-word.png) |
+| ![Index](docs/ecran-index.png) | ![Aperçu](docs/ecran-apercu.png) |
 
 ## Installer
 
 1. Ouvrir la page **Releases** du dépôt.
-2. Télécharger `AbionicDocSearch-windows.zip` et le décompresser où tu veux
+2. Télécharger `AbionicDocSearch-windows.zip` et le décompresser où vous voulez
    (Bureau, `Documents`, une clé USB…).
 3. Double-cliquer `AbionicDocSearch.exe`.
 
@@ -53,7 +59,7 @@ La ligne de commande est fournie à part, dans
 ## Utiliser
 
 1. Onglet **Index** → **Ajouter un dossier** → choisir le lecteur réseau
-   (`T:\`, `\\srv-file\abioSERVER\...`) → **Lancer l'analyse**.
+   (`T:\`, `\\srv-file\abioSERVER\...`) → **Analyser maintenant**.
 2. Onglet **Rechercher** → taper un nom, un dossier ou quelques mots.
 3. Survoler un résultat pour voir la première page, double-cliquer pour ouvrir.
 
@@ -70,7 +76,8 @@ et ne relit que les noms.
 | Index | `data/index.db` |
 | Aperçus en cache | `data/previews/` |
 | Réglages | `data/config.json` |
-| Journal d'erreur | `data/crash.log` |
+| Journal de démarrage | `data/crash.log` |
+| Journal des aperçus | `data/preview.log` |
 
 Le dossier `data` est créé à côté de l'exécutable. Si ce dossier n'est pas
 inscriptible (emplacement protégé), l'application utilise
@@ -78,6 +85,24 @@ inscriptible (emplacement protégé), l'application utilise
 
 Rien n'est envoyé sur le réseau. L'application ne lit un document qu'au moment
 où tu survoles son résultat.
+
+## Fichiers ignorés
+
+Par défaut, ces fichiers ne sont jamais indexés :
+
+- archives : `.zip`, `.rar`, `.7z`, `.tar`, `.gz`, `.tgz`, `.bz2`, `.xz`,
+  `.cab`, `.iso` ;
+- exécutables et bibliothèques : `.exe`, `.msi`, `.dll`, `.sys`, `.drv`,
+  `.so`, `.bat`, `.cmd`, `.ps1`, `.vbs`, `.jar` ;
+- fichiers temporaires ou de sauvegarde : `.tmp`, `.temp`, `.bak`, `.old`,
+  `.dmp`, `.part`, `.lnk` ;
+- bases et journaux : `.db`, `.sqlite`, `.mdb`, `.log` ;
+- noms spéciaux : `Thumbs.db`, `desktop.ini`, `.DS_Store`, `~$*` (verrous
+  Office), `*.tmp`, `*.bak`.
+
+La liste complète est dans **Index → Options avancées → Fichiers ignorés**.
+Retirer une ligne puis relancer l'analyse réintègre ces fichiers. Les fichiers
+déjà indexés qui deviennent exclus sont supprimés de l'index au scan suivant.
 
 ## Ligne de commande
 
@@ -149,10 +174,15 @@ tools/          générateur de corpus, serveur de développement
 - **SQLite FTS5** avec `remove_diacritics`, index externe sur la table `docs`.
   Les noms sont aussi indexés découpés aux frontières de mots
   (`abioCALIB` → `abio CALIB`) pour que `calib` fonctionne.
-- **Aperçus** : PyMuPDF pour les pages PDF et images, automation COM
-  (`Word.Application`, `Excel.Application`, `PowerPoint.Application`) pour les
-  formats Office, avec délai maximal et repli texte. Cache sur disque indexé
-  par chemin + taille + date.
+- **Aperçus** : PyMuPDF pour les pages PDF et images (repli Pillow pour le
+  WebP), automation COM (`Word.Application`, `Excel.Application`,
+  `PowerPoint.Application`) pour les formats Office, avec délai maximal et
+  repli texte. Le DOCX est lu directement dans `word/document.xml` : ni styles
+  ni relations ne sont nécessaires. Cache disque indexé par chemin + taille +
+  date, plafonné à 800 Mo.
+- **Audit des aperçus** : `docs/rapport-apercus.md` recense 97 cas (tableaux,
+  images, PDF chiffrés, DOCX abîmés, feuilles masquées…) et les correctifs
+  associés.
 
 ## Limites connues
 
