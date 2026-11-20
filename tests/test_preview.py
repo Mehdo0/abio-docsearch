@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
@@ -217,6 +218,7 @@ def test_xlsx_skips_hidden_first_sheet(tmp_path: Path) -> None:
     assert "Donnee" in flat and "Ne pas diffuser" not in flat
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="nom de fichier non UTF-8 impossible sous Windows")
 def test_non_utf8_filename_does_not_raise(tmp_path: Path) -> None:
     import os
 
