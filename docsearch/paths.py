@@ -16,7 +16,7 @@ from pathlib import Path
 
 APP_NAME = "Abionic DocSearch"
 APP_SLUG = "abionic-docsearch"
-VERSION = "3.1.0"
+VERSION = "3.1.1"
 
 DEFAULT_CONFIG: dict = {
     "roots": [],
