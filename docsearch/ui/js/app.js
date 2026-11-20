@@ -554,8 +554,10 @@ function renderIndex() {
 
   const hasRoots = S.cfg.roots.length > 0;
   $("#btnScan").disabled = !hasRoots;
+  const count = S.cfg.roots.length;
   $("#scanHint").textContent = hasRoots
-    ? `${fmtInt(S.cfg.roots.length)} dossier(s) prêt(s). L'analyse ne modifie rien.`
+    ? (count === 1 ? "1 dossier prêt. L'analyse ne modifie rien."
+                   : `${fmtInt(count)} dossiers prêts. L'analyse ne modifie rien.`)
     : "Ajoutez d'abord un dossier à l'étape 1.";
   updateAdvancedSummary();
 }
