@@ -42,6 +42,7 @@ class Api:
             "visited": 0,
             "errors": 0,
             "excluded": 0,
+            "ignored": 0,
             "current": "",
             "elapsed": 0,
             "result": None,
@@ -68,7 +69,7 @@ class Api:
             "config": self.config,
             "recent": recent,
             "platform": sys.platform,
-            "office": os.name == "nt",
+            "office": preview.office_available(),
             "data_dir": str(data_dir()),
             "cache_size": preview.cache_size(),
             "folders": _default_folders(),
@@ -90,9 +91,15 @@ class Api:
         except Exception:
             return []
 
-    def preview(self, path: str) -> dict:
+    def preview(self, path: str, mode: str = "full") -> dict:
         try:
-            return preview.render(path, allow_office=True)
+            return preview.render(path, allow_office=(mode != "fast"), mode=mode)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def preview_fast(self, path: str) -> dict:
+        try:
+            return preview.render(path, allow_office=False, mode="fast")
         except Exception as exc:
             return {"ok": False, "error": str(exc)}
 
@@ -168,6 +175,7 @@ class Api:
             self._scan = {
                 "running": True, "phase": "scan", "files": 0, "dirs": 0,
                 "added": 0, "visited": 0, "errors": 0, "excluded": 0,
+                "ignored": 0,
                 "current": "", "elapsed": 0, "result": None, "error": None,
             }
         self.config["roots"] = roots
@@ -180,7 +188,7 @@ class Api:
         def progress(state: dict) -> None:
             with self._scan_lock:
                 for key in ("files", "dirs", "added", "visited", "errors",
-                            "excluded", "current", "elapsed"):
+                            "excluded", "ignored", "current", "elapsed"):
                     if key in state:
                         self._scan[key] = state[key]
                 if state.get("done"):
@@ -224,7 +232,8 @@ class Api:
         return self.config
 
     def save_config(self, patch: dict) -> dict:
-        allowed = {"roots", "exclude_dirs", "include_exts", "threads"}
+        allowed = {"roots", "exclude_dirs", "include_exts", "exclude_exts",
+                   "exclude_names", "threads"}
         for key, value in (patch or {}).items():
             if key in allowed:
                 self.config[key] = value
