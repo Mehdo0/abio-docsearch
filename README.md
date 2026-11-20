@@ -41,7 +41,8 @@ Pas d'installation, pas de droit administrateur. Windows peut afficher
 « Windows a protégé votre PC » : *Informations complémentaires* puis
 *Exécuter quand même* (l'exécutable n'est pas signé).
 
-Le zip contient aussi `abio-docsearch-cli.exe` pour les scripts.
+La ligne de commande est fournie à part, dans
+`abio-docsearch-cli-windows.zip`, pour ceux qui scriptent des scans.
 
 ### Prérequis
 
@@ -116,7 +117,8 @@ Le build se fait sur Windows, dans GitHub Actions (`.github/workflows/build.yml`
 - tests ;
 - `AbionicDocSearch.exe` (fenêtre, sans console) ;
 - `abio-docsearch-cli.exe` (console) ;
-- zip de distribution + empreinte SHA-256, publiés en Release sur un tag `v*`.
+- deux zips (application, ligne de commande) + empreintes SHA-256, publiés
+  en Release sur un tag `v*`.
 
 En local, sur Windows :
 

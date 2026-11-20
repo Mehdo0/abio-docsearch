@@ -16,3 +16,6 @@ Si Windows affiche "Windows a protege votre PC" : "Informations
 complementaires" puis "Executer quand meme". L'executable n'est pas signe.
 
 En cas de probleme, le journal est dans data\crash.log.
+
+La ligne de commande (scan, recherche pour scripts) est dans le zip
+separe abio-docsearch-cli-windows.zip.

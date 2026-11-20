@@ -70,13 +70,18 @@ jobs:
 
       - name: Paquet de distribution
         run: |
-          New-Item -ItemType Directory -Force dist\package | Out-Null
-          Copy-Item dist\AbionicDocSearch.exe dist\package\
-          Copy-Item dist\abio-docsearch-cli.exe dist\package\
-          Copy-Item packaging\LISEZMOI.txt dist\package\
-          Compress-Archive -Path dist\package\* -DestinationPath dist\AbionicDocSearch-windows.zip -Force
-          Get-FileHash dist\AbionicDocSearch-windows.zip -Algorithm SHA256 |
-            ForEach-Object { "$($_.Hash.ToLower())  AbionicDocSearch-windows.zip" } |
+          New-Item -ItemType Directory -Force dist\app | Out-Null
+          Copy-Item dist\AbionicDocSearch.exe dist\app\
+          Copy-Item packaging\LISEZMOI.txt dist\app\
+          Compress-Archive -Path dist\app\* -DestinationPath dist\AbionicDocSearch-windows.zip -Force
+
+          New-Item -ItemType Directory -Force dist\cli | Out-Null
+          Copy-Item dist\abio-docsearch-cli.exe dist\cli\
+          Copy-Item packaging\LISEZMOI.txt dist\cli\
+          Compress-Archive -Path dist\cli\* -DestinationPath dist\abio-docsearch-cli-windows.zip -Force
+
+          Get-FileHash dist\AbionicDocSearch-windows.zip, dist\abio-docsearch-cli-windows.zip -Algorithm SHA256 |
+            ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } |
             Set-Content dist\SHA256SUMS.txt
           Get-Content dist\SHA256SUMS.txt
 
@@ -85,6 +90,7 @@ jobs:
           name: AbionicDocSearch-windows
           path: |
             dist/AbionicDocSearch-windows.zip
+            dist/abio-docsearch-cli-windows.zip
             dist/SHA256SUMS.txt
           retention-days: 30
 
@@ -94,6 +100,7 @@ jobs:
         with:
           files: |
             dist/AbionicDocSearch-windows.zip
+            dist/abio-docsearch-cli-windows.zip
             dist/SHA256SUMS.txt
           generate_release_notes: true
           body: |
@@ -103,4 +110,5 @@ jobs:
             puis double-clique `AbionicDocSearch.exe`. Aucun droit administrateur,
             aucune installation.
 
-            Le même dossier contient `abio-docsearch-cli.exe` pour les scripts.
+            La ligne de commande reste disponible séparément :
+            `abio-docsearch-cli-windows.zip`.
