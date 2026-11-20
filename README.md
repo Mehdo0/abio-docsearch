@@ -1,0 +1,167 @@
+# Abionic DocSearch
+
+Application de bureau Windows pour retrouver un document dans le partage du
+service et en voir la première page sans quitter l'application.
+
+Plus de terminal, plus de page `localhost` : un seul exécutable, une fenêtre,
+une recherche instantanée.
+
+![Recherche et aperçu](docs/ecran-recherche.png)
+
+## Ce que fait l'application
+
+- **Indexe les noms** de fichiers et de dossiers d'un ou plusieurs partages
+  (lecteur réseau, dossier local). Aucun document n'est ouvert pendant le
+  scan : 200 000 fichiers prennent une quinzaine de secondes.
+- **Cherche en moins d'une milliseconde**, sans tenir compte des accents ni
+  des majuscules, avec recherche par préfixe et par phrase entre guillemets.
+  `calib` trouve `abioCALIB`, `definitif` trouve `définitif`.
+- **Prévisualise la première page au survol** :
+  - PDF et images : rendu réel de la page ;
+  - Word, Excel, PowerPoint : conversion par l'Office installé sur le poste,
+    puis rendu de la page 1 ;
+  - si Office ne répond pas : reconstruction lisible à partir du texte.
+- **Ouvre le document** dans Office ou le lecteur PDF, affiche son dossier
+  dans l'Explorateur, copie son chemin.
+- **Garde tout en local** : l'index et le cache d'aperçus restent sur le
+  poste, dans un dossier `data` à côté de l'exécutable.
+
+| Index local | Aperçu Word |
+| --- | --- |
+| ![Index](docs/ecran-index.png) | ![Aperçu](docs/ecran-apercu-word.png) |
+
+## Installer
+
+1. Ouvrir la page **Releases** du dépôt.
+2. Télécharger `AbionicDocSearch-windows.zip` et le décompresser où tu veux
+   (Bureau, `Documents`, une clé USB…).
+3. Double-cliquer `AbionicDocSearch.exe`.
+
+Pas d'installation, pas de droit administrateur. Windows peut afficher
+« Windows a protégé votre PC » : *Informations complémentaires* puis
+*Exécuter quand même* (l'exécutable n'est pas signé).
+
+Le zip contient aussi `abio-docsearch-cli.exe` pour les scripts.
+
+### Prérequis
+
+- Windows 10 ou 11 avec **Microsoft Edge WebView2** (présent par défaut).
+- Microsoft Office pour les aperçus fidèles des fichiers Word/Excel/PowerPoint.
+  Sans Office, un aperçu texte est affiché.
+
+## Utiliser
+
+1. Onglet **Index** → **Ajouter un dossier** → choisir le lecteur réseau
+   (`T:\`, `\\srv-file\abioSERVER\...`) → **Lancer l'analyse**.
+2. Onglet **Rechercher** → taper un nom, un dossier ou quelques mots.
+3. Survoler un résultat pour voir la première page, double-cliquer pour ouvrir.
+
+Raccourcis : `Ctrl+K` recherche, `↑`/`↓` naviguer, `Entrée` ouvrir,
+`Ctrl+C` copier le chemin, `Échap` effacer.
+
+Relancer l'analyse après des changements est rapide : le scan est incrémental
+et ne relit que les noms.
+
+## Où sont les données
+
+| Élément | Emplacement |
+| --- | --- |
+| Index | `data/index.db` |
+| Aperçus en cache | `data/previews/` |
+| Réglages | `data/config.json` |
+| Journal d'erreur | `data/crash.log` |
+
+Le dossier `data` est créé à côté de l'exécutable. Si ce dossier n'est pas
+inscriptible (emplacement protégé), l'application utilise
+`%LOCALAPPDATA%\Abionic\DocSearch`.
+
+Rien n'est envoyé sur le réseau. L'application ne lit un document qu'au moment
+où tu survoles son résultat.
+
+## Ligne de commande
+
+```powershell
+.\abio-docsearch-cli.exe scan --root "T:\_D2_Research_and_Development" --threads 8
+.\abio-docsearch-cli.exe search "CRS abioCALIB" --type pdf
+.\abio-docsearch-cli.exe stats
+```
+
+`search` accepte `--json`, `--limit`, `--sort` (`relevance`, `date`, `name`,
+`size`) et `--ext .pdf`.
+
+## Développer
+
+```bash
+python -m venv .venv
+.venv/Scripts/activate        # Windows
+pip install -r requirements.txt -r requirements-dev.txt
+pytest -q
+python launcher_gui.py
+```
+
+Sous Linux ou macOS, le rendu Office n'est pas disponible : les aperçus Word,
+Excel et PowerPoint sont reconstruits à partir du texte. C'est le seul écart
+avec Windows.
+
+Pour vérifier l'interface dans un navigateur sans ouvrir de fenêtre native :
+
+```bash
+DOCSEARCH_DATA=/tmp/demo-data python tools/dev_server.py 8899
+```
+
+### Construire l'exécutable
+
+Le build se fait sur Windows, dans GitHub Actions (`.github/workflows/build.yml`) :
+
+- tests ;
+- `AbionicDocSearch.exe` (fenêtre, sans console) ;
+- `abio-docsearch-cli.exe` (console) ;
+- zip de distribution + empreinte SHA-256, publiés en Release sur un tag `v*`.
+
+En local, sur Windows :
+
+```powershell
+pip install pyinstaller
+pyinstaller --onefile --windowed --name AbionicDocSearch `
+  --icon docsearch/ui/assets/favicon.ico `
+  --add-data "docsearch/ui;docsearch/ui" `
+  --collect-all webview launcher_gui.py
+```
+
+## Architecture
+
+```
+docsearch/
+  app.py        fenêtre native pywebview + pont JavaScript
+  catalog.py    parcours des noms, SQLite FTS5, recherche
+  preview.py    première page PDF (PyMuPDF), Office (COM), cache
+  cli.py        scan / search / stats
+  ui/           interface (HTML, CSS, JS, polices, logo)
+launcher_gui.py point d'entrée de l'exécutable fenêtré
+launcher_cli.py point d'entrée de l'exécutable console
+tools/          générateur de corpus, serveur de développement
+```
+
+- **Aucun serveur HTTP** dans l'application : `pywebview` charge les fichiers
+  embarqués et expose les fonctions Python à JavaScript.
+- **SQLite FTS5** avec `remove_diacritics`, index externe sur la table `docs`.
+  Les noms sont aussi indexés découpés aux frontières de mots
+  (`abioCALIB` → `abio CALIB`) pour que `calib` fonctionne.
+- **Aperçus** : PyMuPDF pour les pages PDF et images, automation COM
+  (`Word.Application`, `Excel.Application`, `PowerPoint.Application`) pour les
+  formats Office, avec délai maximal et repli texte. Cache sur disque indexé
+  par chemin + taille + date.
+
+## Limites connues
+
+- Le contenu des documents n'est pas indexé, seulement les noms de fichiers et
+  de dossiers. C'est ce qui permet de scanner 500 000 fichiers en quelques
+  secondes.
+- Les fichiers protégés par mot de passe ne peuvent pas être prévisualisés.
+- L'exécutable n'est pas signé : SmartScreen demande une confirmation au
+  premier lancement.
+
+---
+
+Projet interne Abionic SA. Les polices (Schibsted Grotesk, licence OFL) et le
+logo sont inclus pour l'interface uniquement.
