@@ -89,6 +89,7 @@ async function init() {
   fillSettings();
   renderIndex();
   renderAbout();
+  renderDataPath();
 
   if (!S.boot.stats.files) {
     nav("index");
@@ -700,6 +701,12 @@ async function refreshBoot() {
   renderRecent();
   renderRoots();
   renderIndex();
+  renderDataPath();
+}
+
+function renderDataPath() {
+  const path = S.boot?.data_dir;
+  if (path) $("#dataPath").textContent = path;
 }
 
 function renderAbout() {
