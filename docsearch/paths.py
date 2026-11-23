@@ -16,7 +16,7 @@ from pathlib import Path
 
 APP_NAME = "Abionic DocSearch"
 APP_SLUG = "abionic-docsearch"
-VERSION = "3.1.1"
+VERSION = "3.1.2"
 
 DEFAULT_CONFIG: dict = {
     "roots": [],
@@ -71,6 +71,52 @@ def _portable_root() -> Path | None:
     return None
 
 
+def _legacy_dir() -> Path:
+    """Emplacement historique, hors du dossier de l'exécutable."""
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
+        return base / "Abionic" / "DocSearch"
+    return Path.home() / ".local" / "share" / APP_SLUG
+
+
+def _db_bytes(path: Path) -> int:
+    """Taille de l'index, -1 s'il est absent."""
+    try:
+        return (path / "index.db").stat().st_size
+    except OSError:
+        return -1
+
+
+def _root_count(path: Path) -> int:
+    """Nombre de dossiers analysés enregistrés dans config.json."""
+    try:
+        data = json.loads((path / "config.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return 0
+    roots = data.get("roots") if isinstance(data, dict) else None
+    return len(roots) if isinstance(roots, list) else 0
+
+
+def _library_dir(portable: Path, legacy: Path) -> Path:
+    """Choisit le dossier qui contient réellement la bibliothèque.
+
+    Un exécutable déplacé crée ``data/`` à côté de lui, vide, et masquerait la
+    bibliothèque existante. On ne retient donc le dossier portable que s'il
+    contient une bibliothèque au moins aussi fournie que l'historique.
+    """
+    portable_db, legacy_db = _db_bytes(portable), _db_bytes(legacy)
+    if legacy_db <= 0:
+        return portable
+    if portable_db <= 0:
+        return legacy
+    portable_roots, legacy_roots = _root_count(portable), _root_count(legacy)
+    if legacy_roots and not portable_roots:
+        return legacy
+    if portable_roots and not legacy_roots:
+        return portable
+    return portable if portable_db >= legacy_db else legacy
+
+
 def data_dir() -> Path:
     override = os.environ.get("DOCSEARCH_DATA")
     if override:
@@ -80,13 +126,9 @@ def data_dir() -> Path:
 
     root = _portable_root()
     if root is not None:
-        return root / "data"
-
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
-        path = base / "Abionic" / "DocSearch"
+        path = _library_dir(root / "data", _legacy_dir())
     else:
-        path = Path.home() / ".local" / "share" / APP_SLUG
+        path = _legacy_dir()
     path.mkdir(parents=True, exist_ok=True)
     return path
 
