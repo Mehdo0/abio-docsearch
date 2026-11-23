@@ -83,6 +83,11 @@ Le dossier `data` est créé à côté de l'exécutable. Si ce dossier n'est pas
 inscriptible (emplacement protégé), l'application utilise
 `%LOCALAPPDATA%\Abionic\DocSearch`.
 
+Déplacer l'exécutable ne perd pas la bibliothèque : au démarrage, si le dossier
+`data` voisin est vide alors que `%LOCALAPPDATA%\Abionic\DocSearch` contient un
+index, l'application réutilise ce dernier. Le chemin réellement utilisé est
+affiché dans **Options avancées → Dossier de données**.
+
 Rien n'est envoyé sur le réseau. L'application ne lit un document qu'au moment
 où tu survoles son résultat.
 
