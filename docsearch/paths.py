@@ -16,7 +16,7 @@ from pathlib import Path
 
 APP_NAME = "Abionic DocSearch"
 APP_SLUG = "abionic-docsearch"
-VERSION = "3.1.2"
+VERSION = "3.1.3"
 
 DEFAULT_CONFIG: dict = {
     "roots": [],
@@ -117,12 +117,45 @@ def _library_dir(portable: Path, legacy: Path) -> Path:
     return portable if portable_db >= legacy_db else legacy
 
 
+POINTER_NAME = "donnees.txt"
+
+
+def pointer_file() -> Path:
+    """Fichier qui mémorise le dossier de données choisi par l'utilisateur."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent / POINTER_NAME
+    return _legacy_dir() / POINTER_NAME
+
+
+def set_data_dir_pointer(path: Path) -> Path:
+    """Enregistre un dossier de données et renvoie le fichier écrit."""
+    target = pointer_file()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(str(path), encoding="utf-8")
+    return target
+
+
+def _pointer_dir() -> Path | None:
+    try:
+        raw = pointer_file().read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    return path if path.is_dir() else None
+
+
 def data_dir() -> Path:
     override = os.environ.get("DOCSEARCH_DATA")
     if override:
         path = Path(override).expanduser().resolve()
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    choisi = _pointer_dir()
+    if choisi is not None:
+        return choisi
 
     root = _portable_root()
     if root is not None:

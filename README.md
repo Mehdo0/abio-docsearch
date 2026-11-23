@@ -86,7 +86,10 @@ inscriptible (emplacement protégé), l'application utilise
 Déplacer l'exécutable ne perd pas la bibliothèque : au démarrage, si le dossier
 `data` voisin est vide alors que `%LOCALAPPDATA%\Abionic\DocSearch` contient un
 index, l'application réutilise ce dernier. Le chemin réellement utilisé est
-affiché dans **Options avancées → Dossier de données**.
+affiché dans **Options avancées → Dossier de données**. Si la bibliothèque se
+trouve ailleurs (dossier déplacé à la main), le bouton **Choisir…** indique son
+emplacement une fois pour toutes ; le choix est mémorisé dans `donnees.txt` à
+côté de l'exécutable.
 
 Rien n'est envoyé sur le réseau. L'application ne lit un document qu'au moment
 où tu survoles son résultat.

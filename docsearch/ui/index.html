@@ -251,10 +251,15 @@
         </section>
 
         <section class="adv-block">
-          <div>
-            <h3>Dossier de données</h3>
-            <p class="adv-hint">Index, cache et réglages. Lorsque l'exécutable est déplacé, l'application retrouve d'elle-même la bibliothèque existante au lieu de repartir d'un dossier vide.</p>
-            <p class="adv-hint"><code id="dataPath">—</code></p>
+          <div class="adv-head">
+            <div>
+              <h3>Dossier de données</h3>
+              <p class="adv-hint">Index, cache et réglages. Si vous déplacez l'application, indiquez ici l'ancien dossier : la bibliothèque et vos réglages sont repris tels quels.</p>
+              <p class="adv-hint"><code id="dataPath">—</code></p>
+            </div>
+            <div class="head-actions">
+              <button class="btn ghost small" id="btnPickData"><svg><use href="#i-folder"/></svg> Choisir…</button>
+            </div>
           </div>
         </section>
       </div>

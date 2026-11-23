@@ -23,6 +23,7 @@ from .paths import (
     human_size,
     load_config,
     save_config,
+    set_data_dir_pointer,
     ui_dir,
 )
 from .winpath import io_path
@@ -285,8 +286,47 @@ class Api:
     def open_data_dir(self) -> dict:
         return self.open_file(str(data_dir()))
 
+    def choose_data_dir(self) -> dict:
+        """Indique où se trouve une bibliothèque déjà constituée."""
+        import webview
+
+        if self._window is None:
+            return {"ok": False, "error": "Fenêtre indisponible"}
+        try:
+            picks = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+        if not picks:
+            return {"ok": False, "cancelled": True}
+        choisi = Path(picks[0] if isinstance(picks, (list, tuple)) else picks)
+        found = _library_root(choisi)
+        if found is None:
+            return {"ok": False,
+                    "error": "Aucun index (index.db) dans ce dossier. Choisissez "
+                             "le dossier qui contient index.db, ou son parent."}
+        try:
+            set_data_dir_pointer(found)
+        except OSError as exc:
+            return {"ok": False, "error": f"Dossier non inscriptible : {exc}"}
+        try:
+            self.catalog.close()
+        except Exception:
+            pass
+        self.catalog = Catalog(db_path())
+        self.config = load_config()
+        return {"ok": True, "data_dir": str(data_dir()), "stats": self.catalog.stats()}
+
     def check_paths(self, roots: list[str]) -> list[dict]:
         return [{"path": r, "exists": Path(io_path(r)).exists()} for r in (roots or [])]
+
+
+def _library_root(path: Path) -> Path | None:
+    """Dossier contenant index.db, à la racine choisie ou dans son data/."""
+    if (path / "index.db").is_file():
+        return path
+    if (path / "data" / "index.db").is_file():
+        return path / "data"
+    return None
 
 
 def _default_folders() -> list[str]:

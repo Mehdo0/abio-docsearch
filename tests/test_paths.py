@@ -76,3 +76,33 @@ def test_sans_executable_gele_emplacement_historique(monkeypatch, tmp_path):
     monkeypatch.setattr(paths, "_legacy_dir", lambda: legacy)
 
     assert paths.data_dir() == legacy
+
+def test_dossier_choisi_est_prioritaire(deplace):
+    _bibliotheque(deplace["legacy"], 4096, ["D:\\docs"])
+    choisi = deplace["portable"].parent / "ailleurs"
+    _bibliotheque(choisi, 2048, ["E:\\partage"])
+
+    paths.set_data_dir_pointer(choisi)
+
+    assert paths.data_dir() == choisi
+    assert paths.pointer_file().name == "donnees.txt"
+    assert paths.pointer_file().read_text(encoding="utf-8") == str(choisi)
+
+
+def test_pointeur_obsolete_est_ignore(deplace, tmp_path):
+    _bibliotheque(deplace["legacy"], 4096, ["D:\\docs"])
+    paths.set_data_dir_pointer(tmp_path / "disque-absent")
+
+    assert paths.data_dir() == deplace["legacy"]
+
+
+def test_library_root_accepte_le_dossier_ou_son_data(tmp_path):
+    from docsearch.app import _library_root
+
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "index.db").write_bytes(b"x")
+    (tmp_path / "vide").mkdir()
+
+    assert _library_root(tmp_path) == tmp_path / "data"
+    assert _library_root(tmp_path / "data") == tmp_path / "data"
+    assert _library_root(tmp_path / "vide") is None

@@ -176,6 +176,13 @@ function wire() {
     const r = await Bridge.call("open_data_dir");
     if (!r.ok) toast(r.error || "Impossible d'ouvrir le dossier", true);
   });
+  $("#btnPickData").addEventListener("click", async () => {
+    const r = await Bridge.call("choose_data_dir");
+    if (r.cancelled) return;
+    if (!r.ok) { toast(r.error || "Dossier non valide", true); return; }
+    await refreshBoot();
+    toast(`Bibliothèque reprise : ${fmtInt(r.stats?.files || 0)} fichiers`);
+  });
   $("#btnClearCache").addEventListener("click", async () => {
     const r = await Bridge.call("clear_cache");
     toast(r.ok ? `Cache vidé (${r.freed})` : "Échec du nettoyage", !r.ok);
