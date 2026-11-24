@@ -106,3 +106,42 @@ def test_library_root_accepte_le_dossier_ou_son_data(tmp_path):
     assert _library_root(tmp_path) == tmp_path / "data"
     assert _library_root(tmp_path / "data") == tmp_path / "data"
     assert _library_root(tmp_path / "vide") is None
+
+
+def test_pointeur_sans_index_n_ecrase_pas_la_bibliotheque(deplace, tmp_path):
+    """Le bug : donnees.txt vers un dossier vide masquait l'index réel."""
+    _bibliotheque(deplace["portable"], 8192, ["E:\\partage"])
+    vide = tmp_path / "dossier-sans-index"
+    vide.mkdir()
+    paths.set_data_dir_pointer(vide)
+
+    assert paths.data_dir() == deplace["portable"]
+
+    info = paths.data_info()
+    assert info["path"] == str(deplace["portable"])
+    assert info["has_index"] is True
+    assert any("index.db" in w for w in info["warnings"])
+    assert info["source"] == paths.SOURCE_APP
+
+
+def test_data_info_designe_le_dossier_et_son_origine(deplace):
+    _bibliotheque(deplace["portable"], 4096, ["E:\\partage"])
+
+    info = paths.data_info()
+
+    assert info["path"] == str(deplace["portable"])
+    assert info["source"] == paths.SOURCE_APP
+    assert info["writable"] is True
+    assert info["index_bytes"] > 0
+    labels = [c["label"] for c in info["candidates"]]
+    assert "Dossier de l'application" in labels
+
+
+def test_pointeur_vers_le_dossier_parent_est_corrige(deplace):
+    """donnees.txt = dossier de l'exe : utiliser son sous-dossier data."""
+    _bibliotheque(deplace["portable"], 4096, ["E:\\partage"])
+    paths.set_data_dir_pointer(deplace["portable"].parent)
+
+    assert paths.data_dir() == deplace["portable"]
+    assert paths.pointer_file().read_text(encoding="utf-8") == str(deplace["portable"])
+    assert paths.data_info()["source"] == paths.SOURCE_POINTER
