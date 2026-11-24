@@ -63,33 +63,69 @@ La ligne de commande est fournie à part, dans
 2. Onglet **Rechercher** → taper un nom, un dossier ou quelques mots.
 3. Survoler un résultat pour voir la première page, double-cliquer pour ouvrir.
 
+Le résultat d'une recherche de dossier propose deux boutons : **Chercher ici**
+limite la recherche à ce dossier (un bandeau `Dans : CRS ×` rappelle le filtre,
+la croix le retire) et l'icône dossier l'ouvre dans l'Explorateur.
+
+L'aperçu se feuillete : `1 / 12` sous la page, `+`/`−` pour zoomer (ou
+`Ctrl`+molette), `100 %` pour revenir à la taille normale. Sous la liste,
+**Afficher les suivants** charge la suite quand il y a plus de 200 résultats ;
+le nombre total réel est toujours affiché.
+
+Si Office ne répond pas, l'aperçu texte reste affiché avec un bouton
+**Réessayer** : inutile de relancer l'application.
+
 Raccourcis : `Ctrl+K` recherche, `↑`/`↓` naviguer, `Entrée` ouvrir,
-`Ctrl+C` copier le chemin, `Échap` effacer.
+`Alt+←`/`Alt+→` résultats précédents/suivants, `Alt+↑`/`Alt+↓` page
+précédente/suivante, `Ctrl+C` copier le chemin, `Échap` retirer le dossier
+puis effacer.
 
 Relancer l'analyse après des changements est rapide : le scan est incrémental
 et ne relit que les noms.
 
 ## Où sont les données
 
+Tout reste dans **un seul dossier**, `data`, à côté de l'exécutable :
+
 | Élément | Emplacement |
 | --- | --- |
 | Index | `data/index.db` |
 | Aperçus en cache | `data/previews/` |
-| Réglages | `data/config.json` |
+| Réglages (dossiers analysés) | `data/config.json` |
 | Journal de démarrage | `data/crash.log` |
-| Journal des aperçus | `data/preview.log` |
+| Journal d'analyse | `data/scan-errors.log` |
 
-Le dossier `data` est créé à côté de l'exécutable. Si ce dossier n'est pas
-inscriptible (emplacement protégé), l'application utilise
-`%LOCALAPPDATA%\Abionic\DocSearch`.
+Exemple : exe dans `C:\Users\MMO\tools\docsearch\` →
+`C:\Users\MMO\tools\docsearch\data\`.
 
-Déplacer l'exécutable ne perd pas la bibliothèque : au démarrage, si le dossier
-`data` voisin est vide alors que `%LOCALAPPDATA%\Abionic\DocSearch` contient un
-index, l'application réutilise ce dernier. Le chemin réellement utilisé est
-affiché dans **Options avancées → Dossier de données**. Si la bibliothèque se
-trouve ailleurs (dossier déplacé à la main), le bouton **Choisir…** indique son
-emplacement une fois pour toutes ; le choix est mémorisé dans `donnees.txt` à
-côté de l'exécutable.
+Le dossier est choisi dans cet ordre, et l'interface affiche lequel a été
+retenu :
+
+1. `DOCSEARCH_DATA` (variable d'environnement, réservée aux scripts) ;
+2. `donnees.txt` à côté de l'exécutable — **seulement s'il désigne un dossier
+   qui contient `index.db`** ;
+3. `data` à côté de l'exécutable ;
+4. `%LOCALAPPDATA%\Abionic\DocSearch` (exe placé dans un dossier protégé).
+
+Un `donnees.txt` qui pointe vers un dossier vide ou supprimé est ignoré et
+signalé en clair dans l'interface. C'était la cause d'un index introuvable
+alors que la bibliothèque existait : l'application travaillait silencieusement
+dans un dossier vide.
+
+**Vérifier ou réparer** : *Options avancées → Dossier de données* montre le
+chemin utilisé, son origine, le nombre de documents, la taille de l'index et
+les autres emplacements examinés. Le bouton `Copier le diagnostic` met ce
+rapport dans le presse-papiers. En ligne de commande :
+`abio-docsearch-cli diag`.
+
+Déplacer l'exécutable ne perd pas la bibliothèque : si le `data` voisin est
+vide alors que `%LOCALAPPDATA%\Abionic\DocSearch` contient un index fourni,
+l'application réutilise ce dernier. Le bouton **Choisir…** force un dossier
+précis et le mémorise dans `donnees.txt`.
+
+Une analyse dont un dossier demandé est inaccessible (partage déconnecté,
+droits retirés) ne supprime plus rien : l'index précédent est conservé et
+l'interface indique le dossier en cause.
 
 Rien n'est envoyé sur le réseau. L'application ne lit un document qu'au moment
 où tu survoles son résultat.

@@ -9,13 +9,50 @@ ABIONIC DOCSEARCH
    premiere page, double-clique pour ouvrir le document.
 
 Aucune installation, aucun droit administrateur.
-Les donnees (index et apercus) restent sur ce poste, dans le dossier "data"
-a cote de l'executable.
+
+
+NOUVEAU : NAVIGUER PLUS VITE
+----------------------------
+- Resultat de dossier : "Chercher ici" limite la recherche a ce dossier
+  (bandeau "Dans : CRS x" au-dessus des resultats, la croix le retire).
+- Apercu : fleches "< 1 / 12 >" pour changer de page, "+ / -" ou Ctrl+molette
+  pour zoomer, clic sur le pourcentage pour revenir a 100 %.
+- Plus de 200 resultats : bouton "Afficher les suivants" sous la liste ; le
+  nombre total reel est toujours indique.
+- Word/Excel/PowerPoint ne repond pas : l'apercu texte s'affiche avec un
+  bouton "Reessayer". Pas besoin de relancer le logiciel.
+- Raccourcis : Alt+Gauche / Alt+Droite = resultats precedent / suivant,
+  Alt+Haut / Alt+Bas = page precedente / suivante, Ctrl+K = rechercher,
+  Echap = retirer le dossier puis effacer la recherche.
+
+OU SONT LES DONNEES
+-------------------
+Tout est dans le dossier "data" a cote de l'executable :
+  data\index.db        l'index de recherche
+  data\config.json     les dossiers analyses et vos reglages
+  data\previews\       les apercus deja affiches
+  data\scan-errors.log les dossiers qui n'ont pas pu etre lus
+
+Exemple : exe dans C:\Users\MMO\tools\docsearch\
+          donnees dans C:\Users\MMO\tools\docsearch\data\
+
+
+VERIFIER LE DOSSIER UTILISE
+---------------------------
+Onglet "Index" -> "Options avancees" -> "Dossier de donnees".
+La fenetre indique le chemin reellement utilise, son origine, le nombre de
+documents et la taille de l'index.
+Bouton "Copier le diagnostic" : le rapport part dans le presse-papiers,
+preet a etre colle dans un message.
+
+Depuis une ligne de commande :
+  abio-docsearch-cli.exe diag
+
 
 Si Windows affiche "Windows a protege votre PC" : "Informations
 complementaires" puis "Executer quand meme". L'executable n'est pas signe.
 
-En cas de probleme, le journal est dans data\crash.log.
+En cas de probleme au demarrage, le journal est dans data\crash.log.
 
 La ligne de commande (scan, recherche pour scripts) est dans le zip
 separe abio-docsearch-cli-windows.zip.
