@@ -43,6 +43,8 @@ OFFICE_TIMEOUT = 20
 MAX_TABLE_ROWS = 16
 MAX_TABLE_COLS = 6
 TEXT_LIMIT = 2600
+# Toute modification du rendu invalide les aperçus déjà en cache.
+CACHE_VERSION = "3.3"
 
 WORD_EXTS = {".doc", ".docx", ".docm", ".rtf", ".odt"}
 EXCEL_EXTS = {".xls", ".xlsx", ".xlsm", ".csv", ".ods"}
@@ -123,7 +125,9 @@ def _pdf_open(path: str):
 
 
 def _cache_key(path: str, stat: os.stat_result) -> str:
-    raw = f"{path.lower()}|{stat.st_size}|{stat.st_mtime_ns}".encode("utf-8", "replace")
+    raw = f"{CACHE_VERSION}|{path.lower()}|{stat.st_size}|{stat.st_mtime_ns}".encode(
+        "utf-8", "replace"
+    )
     return hashlib.sha1(raw).hexdigest()
 
 
@@ -255,61 +259,79 @@ def _pdf_page_one(path: str) -> dict:
             return {"ok": False, "error": "Document protégé par mot de passe."}
         if doc.page_count == 0:
             return {"ok": False, "error": "Document vide."}
-        page = doc[0]
-        rect = page.rect
-        zoom = PREVIEW_WIDTH / max(rect.width, 1)
-        if rect.height * zoom > PREVIEW_MAX_HEIGHT:
-            zoom = PREVIEW_MAX_HEIGHT / max(rect.height, 1)
-        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-        data, width, height = _encode_jpeg(pix)
-        return {
-            "ok": True, "kind": "image", "mime": "image/jpeg", "data": data,
-            "width": width, "height": height, "source": "pdf",
-        }
+        result = _pdf_render(doc, 0)
+        result["pages"] = doc.page_count
+        result["source"] = "pdf"
+        return result
     finally:
         doc.close()
 
 
-def _image_preview_pymupdf(path: str) -> dict:
+def _pdf_render(
+    doc, index: int, width: int = PREVIEW_WIDTH, max_height: int = PREVIEW_MAX_HEIGHT
+) -> dict:
+    """Rend une page d'un PDF déjà ouvert, à la largeur demandée."""
+    page = doc[index]
+    rect = page.rect
+    zoom = width / max(rect.width, 1)
+    if rect.height * zoom > max_height:
+        zoom = max_height / max(rect.height, 1)
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
+    data, w, h = _encode_jpeg(pix)
+    return {
+        "ok": True, "kind": "image", "mime": "image/jpeg", "data": data,
+        "width": w, "height": h, "page": index + 1, "pages": doc.page_count,
+    }
+
+
+def _pdf_cache_path(key: str) -> Path | None:
+    """PDF converti depuis Office, conservé pour feuilleter ses pages."""
+    paths = _cache_paths(key)
+    if paths is None:
+        return None
+    return paths[0].with_suffix(".pdf")
+
+
+def _image_preview_pymupdf(path: str, width: int = PREVIEW_WIDTH) -> dict:
     doc = _pdf_open(path)
     try:
         page = doc[0]
         rect = page.rect
-        zoom = PREVIEW_WIDTH / max(rect.width, 1)
+        zoom = width / max(rect.width, 1)
         if rect.height * zoom > PREVIEW_MAX_HEIGHT:
             zoom = PREVIEW_MAX_HEIGHT / max(rect.height, 1)
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False)
-        data, width, height = _encode_jpeg(pix)
+        data, w, h = _encode_jpeg(pix)
         return {
             "ok": True, "kind": "image", "mime": "image/jpeg", "data": data,
-            "width": width, "height": height, "source": "image",
+            "width": w, "height": h, "source": "image", "page": 1, "pages": 1,
         }
     finally:
         doc.close()
 
 
-def _image_preview_pillow(path: str) -> dict:
+def _image_preview_pillow(path: str, width: int = PREVIEW_WIDTH) -> dict:
     from PIL import Image  # type: ignore
 
     with Image.open(io_path(path)) as image:
         image.seek(0)
         image = image.convert("RGB")
-        image.thumbnail((PREVIEW_WIDTH, PREVIEW_MAX_HEIGHT))
+        image.thumbnail((width, PREVIEW_MAX_HEIGHT))
         buffer = io.BytesIO()
         image.save(buffer, "JPEG", quality=82)
-        width, height = image.size
+        w, h = image.size
     return {
         "ok": True, "kind": "image", "mime": "image/jpeg",
         "data": base64.b64encode(buffer.getvalue()).decode("ascii"),
-        "width": width, "height": height, "source": "image",
+        "width": w, "height": h, "source": "image", "page": 1, "pages": 1,
     }
 
 
-def _image_preview(path: str) -> dict:
+def _image_preview(path: str, width: int = PREVIEW_WIDTH) -> dict:
     try:
-        return _image_preview_pymupdf(path)
+        return _image_preview_pymupdf(path, width)
     except Exception:
-        return _image_preview_pillow(path)
+        return _image_preview_pillow(path, width)
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +432,22 @@ def _office_to_pdf(ext: str, src: str, dst: str) -> None:
 
 def office_available() -> bool:
     return os.name == "nt" and not any(v >= 3 for v in _com_failures.values())
+
+
+def office_down(ext: str) -> bool:
+    """Vrai quand l'application Office concernée est considérée en échec."""
+    return _com_unavailable(ext)
+
+
+def office_app_name(ext: str) -> str:
+    return {"word": "Word", "excel": "Excel", "ppt": "PowerPoint"}.get(
+        _app_family(ext), "Office"
+    )
+
+
+def reset_office_failures() -> None:
+    """Autorise une nouvelle tentative après un échec de conversion."""
+    _com_failures.clear()
 
 
 def _office_source(src: str) -> tuple[str, Path | None]:
@@ -920,13 +958,36 @@ def render(path: str, allow_office: bool = True, mode: str = "full") -> dict:
             tmp_pdf = tmp_dir / "preview.pdf"
             try:
                 if _convert_with_timeout(ext, path, str(tmp_pdf)):
+                    # Le PDF converti reste en cache : il permet de feuilleter
+                    # les pages sans rappeler Office.
+                    kept = _pdf_cache_path(key)
+                    if kept is not None:
+                        try:
+                            shutil.copyfile(tmp_pdf, kept)
+                        except OSError:
+                            pass
                     result = _pdf_page_one(str(tmp_pdf))
                     result["source"] = ext.lstrip(".")
             finally:
                 shutil.rmtree(tmp_dir, ignore_errors=True)
         if not result.get("ok"):
             result = _text_preview(ext, path)
-            if mode == "full":
+            if mode == "full" and allow_office and os.name == "nt":
+                app_name = office_app_name(ext)
+                result["office_app"] = app_name
+                result["office_failed"] = True
+                if _com_unavailable(ext):
+                    result["office_down"] = True
+                    result["note"] = (
+                        f"{app_name} n'a pas répondu. Aperçu texte affiché ; "
+                        "vous pouvez réessayer."
+                    )
+                else:
+                    result["note"] = (
+                        f"{app_name} n'a pas pu convertir ce document. "
+                        "Aperçu texte affiché."
+                    )
+            elif mode == "full":
                 result["note"] = result.get("note") or "Aperçu texte (Office indisponible)."
     else:
         result = _text_preview(ext, path)
@@ -945,3 +1006,71 @@ def render_fast(path: str) -> dict:
 def warm(path: str) -> None:
     """Préchauffe le cache sans bloquer l'appelant."""
     threading.Thread(target=render, args=(path,), daemon=True).start()
+
+
+def render_page(path: str, page: int = 1, zoom: float = 1.0) -> dict:
+    """Rend une page précise, à un facteur de zoom donné.
+
+    PDF : lecture directe. Word/Excel/PowerPoint : le PDF converti conservé
+    lors du premier aperçu est réutilisé (sinon il faut d'abord afficher la
+    page 1). Image : une seule page.
+    """
+    try:
+        st = os.stat(io_path(path))
+    except OSError as exc:
+        return {"ok": False, "error": f"Fichier introuvable ({exc.strerror})."}
+
+    ext = _sniff_ext(io_path(path), Path(path).suffix.lower())
+    started = time.perf_counter()
+    page = max(1, int(page or 1))
+    zoom = max(0.6, min(2.0, float(zoom or 1.0)))
+    width = int(PREVIEW_WIDTH * zoom)
+    max_height = int(PREVIEW_MAX_HEIGHT * zoom)
+    key = _cache_key(path, st)
+
+    if ext in IMAGE_EXTS:
+        if page != 1:
+            return {"ok": False, "error": "Une image n'a qu'une page."}
+        try:
+            result = _image_preview(path, width)
+            result["ms"] = round((time.perf_counter() - started) * 1000)
+            return result
+        except Exception as exc:
+            _report(path, exc)
+            return {"ok": False, "error": _friendly_error(exc)}
+
+    if ext == ".pdf":
+        source = io_path(path)
+    elif ext in OFFICE_EXTS:
+        cached = _pdf_cache_path(key)
+        if cached is None or not cached.exists():
+            return {
+                "ok": False,
+                "needs_first": True,
+                "error": "Affichez d'abord la page 1 : la conversion se prépare ici.",
+            }
+        source = str(cached)
+    else:
+        return {"ok": False, "error": "Ce format n'a pas de pages à feuilleter."}
+
+    try:
+        doc = _pdf_open(source)
+    except Exception as exc:
+        _report(path, exc)
+        return {"ok": False, "error": _friendly_error(exc)}
+    try:
+        if doc.needs_pass:
+            return {"ok": False, "error": "Document protégé par mot de passe."}
+        if doc.page_count == 0:
+            return {"ok": False, "error": "Document vide."}
+        if page > doc.page_count:
+            return {"ok": False, "error": f"Ce document n'a que {doc.page_count} page(s)."}
+        result = _pdf_render(doc, page - 1, width, max_height)
+        result["source"] = ext.lstrip(".")
+        result["ms"] = round((time.perf_counter() - started) * 1000)
+        return result
+    except Exception as exc:
+        _report(path, exc)
+        return {"ok": False, "error": _friendly_error(exc)}
+    finally:
+        doc.close()

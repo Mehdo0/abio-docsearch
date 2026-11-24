@@ -13,7 +13,14 @@ import time
 from pathlib import Path
 
 from .catalog import Catalog
-from .paths import VERSION, db_path, human_size, load_config
+from .paths import (
+    VERSION,
+    data_info,
+    data_dir,
+    db_path,
+    human_size,
+    load_config,
+)
 
 
 def _progress_printer():
@@ -90,6 +97,10 @@ def cmd_search(args) -> int:
         print("Aucun résultat.")
         return 1
     print(f"{len(result['files'])} fichier(s) — {result['ms']} ms")
+    total = result.get("total") or 0
+    if total > len(result["files"]):
+        print(f"  {total} correspondance(s) au total, {len(result['files'])} affichée(s)"
+              f" (--limit {args.limit})")
     for item in result["files"]:
         print(f"  {item['size_human']:>9}  {item['date']}  {item['name']}")
         print(f"              {item['folder']}")
@@ -109,6 +120,38 @@ def cmd_stats(args) -> int:
     print(f"  dernier    {stats['last_scan'] or 'jamais'}")
     print(f"  racines    {', '.join(stats['roots']) or '—'}")
     print(f"  index      {human_size(stats['db_size'])}")
+    return 0
+
+
+def cmd_diag(args) -> int:
+    """Où vivent les données, et pourquoi cet emplacement a été retenu."""
+    info = data_info()
+    stats = None
+    try:
+        stats = Catalog(Path(args.db) if args.db else db_path()).stats()
+    except Exception as exc:
+        print(f"  index illisible : {exc}")
+    print(f"  version      {VERSION}")
+    print(f"  données      {info['path']}")
+    print(f"  origine      {info['source']}")
+    print(f"  index        {'oui' if info['has_index'] else 'non'} ({info['index_human']})")
+    print(f"  inscriptible {'oui' if info['writable'] else 'non'}")
+    print(f"  pointeur     {info['pointer']}")
+    if stats:
+        print(f"  documents    {stats['files']:,}".replace(",", " "))
+        print(f"  dossiers     {stats['dirs']:,}".replace(",", " "))
+        print(f"  dernier scan {stats['last_scan'] or 'jamais'}")
+        print(f"  racines      {', '.join(stats['roots']) or '—'}")
+    print("  cache        " + human_size(info["previews_bytes"]))
+    for warning in info["warnings"]:
+        print(f"  ALERTE       {warning}")
+    print("  emplacements examinés :")
+    for candidate in info["candidates"]:
+        print(f"    {candidate['label']:<24} {candidate['path']}")
+        print(f"      index={'oui' if candidate['has_index'] else 'non':<4} "
+              f"taille={human_size(candidate['bytes'])}")
+    if args.json:
+        print(json.dumps({"data": info, "stats": stats}, ensure_ascii=False, indent=2))
     return 0
 
 
@@ -144,6 +187,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     stats = sub.add_parser("stats", help="état de l'index")
     stats.set_defaults(func=cmd_stats)
+
+    diag = sub.add_parser("diag", help="où sont les données et pourquoi")
+    diag.add_argument("--json", action="store_true")
+    diag.set_defaults(func=cmd_diag)
 
     selftest = sub.add_parser("selftest", help="vérifie l'installation et les dépendances")
     selftest.set_defaults(func=cmd_selftest)

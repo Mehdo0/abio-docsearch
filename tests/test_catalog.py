@@ -156,3 +156,78 @@ def test_scan_reads_paths_beyond_260_characters(tmp_path: Path) -> None:
     assert [f["name"] for f in found] == ["Rapport_tres_profond.txt"]
     assert found[0]["path"] == str(document)
     assert not found[0]["path"].startswith("\\\\?\\")
+
+
+def test_scan_inaccessible_ne_vide_pas_l_index(tmp_path: Path) -> None:
+    """Partage déconnecté : on garde l'index au lieu de le purger."""
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    premier = catalog.scan([str(share)], CONFIG)
+    assert premier["files"] == 3
+
+    share.rename(tmp_path / "share-hors-ligne")
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["files"] == 3
+    assert second["purged"] is False
+    assert second["failed_roots"] == [str(share)]
+    assert catalog.search("definitif")["files"], "les documents doivent rester cherchables"
+
+
+def test_reglages_en_chaines_n_ignorent_plus_tout(tmp_path: Path) -> None:
+    """Ancien config.json : "include_exts": ".pdf,.docx" (chaîne, pas liste)."""
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    result = catalog.scan([str(share)], {
+        "threads": 4,
+        "exclude_dirs": "__old",
+        "include_exts": ".pdf,.docx",
+        "exclude_exts": ".zip",
+        "exclude_names": "thumbs.db,desktop.ini",
+    })
+
+    assert result["files"] == 2, result
+    assert result["ignored"] >= 1
+
+
+def test_total_et_offset_pour_afficher_les_suivants(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    (share / "Qualite" / "CRS").mkdir(parents=True)
+    for i in range(25):
+        (share / "Qualite" / "CRS" / f"Rapport_qualite_{i:02d}.pdf").write_bytes(b"%PDF")
+    (share / "Qualite" / "Autre").mkdir()
+    (share / "Qualite" / "Autre" / "Note.pdf").write_bytes(b"%PDF")
+
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    first = catalog.search("rapport", limit=10)
+    assert first["total"] == 25
+    assert len(first["files"]) == 10
+
+    second = catalog.search("rapport", limit=10, offset=10)
+    assert second["total"] == 25
+    assert len(second["files"]) == 10
+    assert not ({f["path"] for f in first["files"]} & {f["path"] for f in second["files"]})
+
+    last = catalog.search("rapport", limit=10, offset=20)
+    assert len(last["files"]) == 5
+
+
+def test_recherche_limitee_a_un_dossier(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    dossier = str(share / "Qualite" / "CRS")
+    result = catalog.search("", folder=dossier)
+    assert result["total"] == 1
+    assert [f["name"] for f in result["files"]] == ["Rapport_définitif_abioCALIB.pdf"]
+    assert result["folder"] == dossier
+
+    parent = str(share / "Qualite")
+    result = catalog.search("", folder=parent)
+    assert result["total"] == 2

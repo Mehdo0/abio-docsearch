@@ -20,7 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .paths import human_size
+from .paths import as_list, human_size
 from .winpath import display_path, io_path
 
 SCHEMA_VERSION = "3.1"
@@ -160,6 +160,7 @@ def walk_paths(
     errors: list,
     skipped: list,
     cancel: threading.Event | None = None,
+    failed_roots: list | None = None,
 ) -> Iterable[tuple]:
     """Rend les entrées au fil de l'eau, sans aucun ``open()``."""
     out: queue.Queue = queue.Queue(maxsize=20000)
@@ -216,8 +217,12 @@ def walk_paths(
                             items.append(("f", child, entry.name, size, mtime, kind))
             except PermissionError:
                 errors.append((folder, "acces refuse"))
+                if depth == 0 and failed_roots is not None:
+                    failed_roots.append(folder)
             except OSError as exc:
                 errors.append((folder, str(exc)))
+                if depth == 0 and failed_roots is not None:
+                    failed_roots.append(folder)
             finally:
                 with lock:
                     active[0] -= 1
@@ -290,17 +295,18 @@ class Catalog:
         con.execute("DELETE FROM seen")
         con.execute("DELETE FROM seen_dir")
 
-        excluded = {norm(x) for x in config.get("exclude_dirs", [])}
+        excluded = {norm(x) for x in as_list(config.get("exclude_dirs"))}
         threads = int(config.get("threads", 8) or 8)
-        include = {e.lower() for e in config.get("include_exts", [])}
+        include = {e.lower() for e in as_list(config.get("include_exts"))}
         exclude_exts = {
             (e.lower() if e.lower().startswith(".") else "." + e.lower())
-            for e in config.get("exclude_exts", [])
+            for e in as_list(config.get("exclude_exts"))
         }
-        exclude_names = [n.lower() for n in config.get("exclude_names", [])]
+        exclude_names = [n.lower() for n in as_list(config.get("exclude_names"))]
 
         errors: list = []
         skipped: list = []
+        failed_roots: list[str] = []
         t0 = time.perf_counter()
         counters = {"files": 0, "dirs": 0, "added": 0, "visited": 0, "ignored": 0}
         last_emit = [0.0]
@@ -388,7 +394,7 @@ class Catalog:
         try:
             for item in walk_paths(
                 roots, excluded, threads, on_tick, on_dir, on_render,
-                errors, skipped, cancel,
+                errors, skipped, cancel, failed_roots,
             ):
                 if item[0] == "d":
                     _, path, name, depth = item
@@ -418,7 +424,11 @@ class Catalog:
             flush(force=True)
 
         gone = 0
-        if not cancelled:
+        # Ne jamais purger l'index quand un dossier demandé n'a pas pu être
+        # lu : partage déconnecté, droits retirés. Sinon le scan vide
+        # l'index au lieu de le mettre à jour.
+        purged = not cancelled and not failed_roots
+        if purged:
             con.execute(
                 "INSERT INTO fts(fts,rowid,name,folder,body) "
                 "SELECT 'delete',id,name,folder,coalesce(body,'') FROM docs "
@@ -455,6 +465,8 @@ class Catalog:
             "added": counters["added"],
             "visited": counters["visited"],
             "gone": gone,
+            "purged": purged,
+            "failed_roots": failed_roots,
             "excluded": len(skipped),
             "ignored": counters["ignored"],
             "errors": len(errors),
@@ -508,6 +520,7 @@ class Catalog:
         sort: str = "relevance",
         folder: str | None = None,
         exts: list[str] | None = None,
+        offset: int = 0,
     ) -> dict:
         con = self.con()
         t0 = time.perf_counter()
@@ -518,22 +531,21 @@ class Catalog:
             ext_list.append(ext.lower())
         ext_list = list(dict.fromkeys(ext_list))
         match = build_query(query)
+        offset = max(0, int(offset or 0))
+        limit = max(1, min(1000, int(limit or 120)))
 
+        # Même clause FROM/WHERE pour la page de résultats et le comptage :
+        # le total annoncé correspond toujours à ce qui est filtrable.
         rows: list[sqlite3.Row] = []
+        total = 0
         if match:
-            sql = """
-                SELECT d.id, d.path, d.name, d.ext, d.folder, d.size, d.mtime,
-                       snippet(fts, 0, '<<', '>>', ' … ', 10) AS snip,
-                       bm25(fts, 20.0, 6.0, 1.0) AS score
-                FROM fts JOIN docs d ON d.id = fts.rowid
-                WHERE fts MATCH ?
-            """
+            base = "FROM fts JOIN docs d ON d.id = fts.rowid WHERE fts MATCH ?"
             params: list = [match]
             if ext_list:
-                sql += " AND d.ext IN (%s)" % ",".join("?" * len(ext_list))
+                base += " AND d.ext IN (%s)" % ",".join("?" * len(ext_list))
                 params.extend(ext_list)
             if folder:
-                sql += " AND d.folder LIKE ?"
+                base += " AND d.folder LIKE ?"
                 params.append(folder.rstrip("\\/") + "%")
             order = {
                 "date": "d.mtime DESC",
@@ -541,32 +553,46 @@ class Catalog:
                 "size": "d.size DESC",
                 "relevance": "score ASC, d.mtime DESC",
             }.get(sort, "score ASC, d.mtime DESC")
-            sql += f" ORDER BY {order} LIMIT ?"
-            params.append(limit)
+            sql = (
+                "SELECT d.id, d.path, d.name, d.ext, d.folder, d.size, d.mtime, "
+                "snippet(fts, 0, '<<', '>>', ' … ', 10) AS snip, "
+                "bm25(fts, 20.0, 6.0, 1.0) AS score " + base
+                + f" ORDER BY {order} LIMIT ? OFFSET ?"
+            )
             try:
-                rows = con.execute(sql, params).fetchall()
+                total = con.execute("SELECT count(*) " + base, params).fetchone()[0]
+                rows = con.execute(sql, [*params, limit, offset]).fetchall()
+            except sqlite3.OperationalError:
+                total, rows = 0, []
+        else:
+            base = "FROM docs d"
+            params = []
+            clauses = []
+            if ext_list:
+                clauses.append("d.ext IN (%s)" % ",".join("?" * len(ext_list)))
+                params.extend(ext_list)
+            if folder:
+                clauses.append("d.folder LIKE ?")
+                params.append(folder.rstrip("\\/") + "%")
+            if clauses:
+                base += " WHERE " + " AND ".join(clauses)
+            order = {
+                "date": "d.mtime DESC", "name": "d.name COLLATE NOCASE ASC",
+                "size": "d.size DESC", "relevance": "d.mtime DESC",
+            }.get(sort, "d.mtime DESC")
+            try:
+                total = con.execute("SELECT count(*) " + base, params).fetchone()[0]
+            except sqlite3.OperationalError:
+                total = 0
+            try:
+                rows = con.execute(
+                    "SELECT d.id,d.path,d.name,d.ext,d.folder,d.size,d.mtime,"
+                    "'' AS snip,0 AS score " + base
+                    + f" ORDER BY {order} LIMIT ? OFFSET ?",
+                    [*params, limit, offset],
+                ).fetchall()
             except sqlite3.OperationalError:
                 rows = []
-        elif ext_list:
-            order = {
-                "date": "mtime DESC", "name": "name COLLATE NOCASE ASC",
-                "size": "size DESC", "relevance": "mtime DESC",
-            }.get(sort, "mtime DESC")
-            sql = (
-                "SELECT id,path,name,ext,folder,size,mtime,'' AS snip,0 AS score FROM docs "
-                "WHERE ext IN (%s) ORDER BY %s LIMIT ?"
-                % (",".join("?" * len(ext_list)), order)
-            )
-            rows = con.execute(sql, [*ext_list, limit]).fetchall()
-        else:
-            order = {
-                "date": "mtime DESC", "name": "name COLLATE NOCASE ASC",
-                "size": "size DESC", "relevance": "mtime DESC",
-            }.get(sort, "mtime DESC")
-            rows = con.execute(
-                "SELECT id,path,name,ext,folder,size,mtime,'' AS snip,0 AS score "
-                "FROM docs ORDER BY " + order + " LIMIT ?", (limit,)
-            ).fetchall()
 
         dirs = []
         if match:
@@ -582,6 +608,9 @@ class Catalog:
 
         return {
             "query": query,
+            "folder": folder or "",
+            "total": total,
+            "offset": offset,
             "files": [
                 {
                     "id": r["id"],

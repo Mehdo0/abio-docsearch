@@ -249,3 +249,48 @@ def test_display_path_removes_the_windows_prefix() -> None:
     assert display_path("\\\\?\\T:\\a\\b.docx") == "T:\\a\\b.docx"
     assert display_path("\\\\?\\UNC\\serveur\\partage\\a.docx") == "\\\\serveur\\partage\\a.docx"
     assert display_path("T:\\a\\b.docx") == "T:\\a\\b.docx"
+
+
+def _pdf_pages(path: Path, pages: int) -> None:
+    import pymupdf
+
+    doc = pymupdf.open()
+    for number in range(pages):
+        page = doc.new_page()
+        page.insert_text((72, 90), f"Page {number + 1}", fontsize=16)
+    doc.save(path)
+    doc.close()
+
+
+def test_pdf_page_count_and_page_rendering(tmp_path: Path) -> None:
+    path = tmp_path / "multipage.pdf"
+    _pdf_pages(path, 3)
+
+    first = preview.render(str(path), allow_office=False)
+    assert first["ok"] is True
+    assert first["pages"] == 3
+    assert first["page"] == 1
+
+    second = preview.render_page(str(path), 2, 1.0)
+    assert second["ok"] is True
+    assert second["page"] == 2
+    assert second["pages"] == 3
+    assert second["data"] != first["data"]
+
+    zoomed = preview.render_page(str(path), 1, 1.5)
+    assert zoomed["ok"] is True
+    assert zoomed["width"] > first["width"]
+
+    beyond = preview.render_page(str(path), 9, 1.0)
+    assert beyond["ok"] is False
+    assert "3" in beyond["error"]
+
+
+def test_office_failure_can_be_reset() -> None:
+    preview._com_failures["word"] = 3
+    assert preview.office_down(".docx") is True
+
+    preview.reset_office_failures()
+
+    assert preview.office_down(".docx") is False
+    assert preview._com_failures == {}

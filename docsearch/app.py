@@ -19,6 +19,7 @@ from .paths import (
     APP_NAME,
     VERSION,
     data_dir,
+    data_info,
     db_path,
     human_size,
     load_config,
@@ -59,15 +60,18 @@ class Api:
     def bootstrap(self) -> dict:
         try:
             stats = self.catalog.stats()
+            stats_error = ""
         except Exception as exc:
             stats = {"files": 0, "dirs": 0, "size": 0, "size_human": "0 o",
-                     "last_scan": None, "roots": [], "db_size": 0,
-                     "error": str(exc)}
+                     "last_scan": None, "roots": [], "db_size": 0}
+            stats_error = str(exc)
         recent = self.catalog.recent(limit=6) if stats.get("files") else []
         return {
             "version": VERSION,
             "app": APP_NAME,
             "stats": stats,
+            "stats_error": stats_error,
+            "data": data_info(),
             "config": self.config,
             "recent": recent,
             "platform": sys.platform,
@@ -80,12 +84,24 @@ class Api:
     # -- recherche ----------------------------------------------------------
     def search(self, query: str, groups: list[str] | None = None,
                sort: str = "relevance", limit: int = 120,
-               folder: str | None = None) -> dict:
+               folder: str | None = None, offset: int = 0) -> dict:
         try:
-            return self.catalog.search(query or "", groups or [], limit, sort, folder)
+            return self.catalog.search(query or "", groups or [], limit, sort,
+                                       folder, None, offset)
         except Exception as exc:
             return {"error": str(exc), "files": [], "folders": [], "ms": 0,
-                    "total_indexed": 0}
+                    "total": 0, "total_indexed": 0}
+
+    def preview_page(self, path: str, page: int = 1, zoom: float = 1.0) -> dict:
+        try:
+            return preview.render_page(path, page, zoom)
+        except Exception as exc:
+            return {"ok": False, "error": str(exc)}
+
+    def retry_office(self) -> dict:
+        """Nouvelle tentative après un échec de conversion Office."""
+        preview.reset_office_failures()
+        return {"ok": True, "office": preview.office_available()}
 
     def recent(self, groups: list[str] | None = None, limit: int = 6) -> list:
         try:
@@ -286,6 +302,46 @@ class Api:
     def open_data_dir(self) -> dict:
         return self.open_file(str(data_dir()))
 
+    def data_info(self) -> dict:
+        """Dossier de données : chemin retenu, origine, contenu, alertes."""
+        return data_info()
+
+    def copy_diagnostic(self) -> dict:
+        """Copie un rapport lisible, à coller dans un message d'assistance."""
+        info = data_info()
+        stats = self.stats()
+        lines = [
+            f"{APP_NAME} {VERSION}",
+            f"Système        : {sys.platform}",
+            f"Exécutable     : {info.get('exe_dir') or '(sources)'}",
+            f"Dossier données: {info['path']}",
+            f"Origine        : {info['source']}",
+            f"Index présent  : {'oui' if info['has_index'] else 'non'}",
+            f"Index          : {info['index_human']}",
+            f"Inscriptible   : {'oui' if info['writable'] else 'non'}",
+            f"Documents      : {stats.get('files', 0)}",
+            f"Dossiers       : {stats.get('dirs', 0)}",
+            f"Dernier scan   : {stats.get('last_scan') or 'jamais'}",
+            f"Racines        : {', '.join(stats.get('roots') or []) or '(aucune)'}",
+            f"Pointeur       : {info['pointer']}",
+            f"Cache aperçus  : {human_size(info['previews_bytes'])}",
+        ]
+        for warning in info["warnings"]:
+            lines.append(f"ALERTE         : {warning}")
+        for candidate in info["candidates"]:
+            lines.append(
+                f"Candidat       : {candidate['label']} — {candidate['path']} "
+                f"— index={'oui' if candidate['has_index'] else 'non'} "
+                f"({human_size(candidate['bytes'])})"
+            )
+        return self.copy_path("\n".join(lines))
+
+    def open_scan_log(self) -> dict:
+        log = data_dir() / "scan-errors.log"
+        if not log.exists():
+            return {"ok": False, "error": "Aucun journal : aucune erreur d'analyse enregistrée."}
+        return self.open_file(str(log))
+
     def choose_data_dir(self) -> dict:
         """Indique où se trouve une bibliothèque déjà constituée."""
         import webview
@@ -314,7 +370,9 @@ class Api:
             pass
         self.catalog = Catalog(db_path())
         self.config = load_config()
-        return {"ok": True, "data_dir": str(data_dir()), "stats": self.catalog.stats()}
+        info = data_info()
+        return {"ok": True, "data_dir": str(data_dir()), "data": info,
+                "stats": self.catalog.stats()}
 
     def check_paths(self, roots: list[str]) -> list[dict]:
         return [{"path": r, "exists": Path(io_path(r)).exists()} for r in (roots or [])]
