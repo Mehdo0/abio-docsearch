@@ -17,6 +17,7 @@
   <symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2 1-1.2 1.9"/><circle cx="12" cy="17" r=".6" fill="currentColor" stroke="none"/></symbol>
   <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
   <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M19 12H5M11 6l-6 6 6 6"/></symbol>
   <symbol id="i-scan" viewBox="0 0 24 24"><path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M4 12h16"/></symbol>
   <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-8 8"/><path d="M18 14v5.5A1.5 1.5 0 0 1 16.5 21h-11A1.5 1.5 0 0 1 4 19.5v-11A1.5 1.5 0 0 1 5.5 7H11"/></symbol>
   <symbol id="i-copy" viewBox="0 0 24 24"><rect x="8.5" y="8.5" width="12" height="12" rx="2"/><path d="M15.5 8.5V6A1.5 1.5 0 0 0 14 4.5H5A1.5 1.5 0 0 0 3.5 6v9A1.5 1.5 0 0 0 5 16.5h3.5"/></symbol>
@@ -34,6 +35,10 @@
       <span class="brand-sep"></span>
       <span class="brand-product">DocSearch</span>
     </a>
+    <div class="history-nav" role="group" aria-label="Historique de recherche">
+      <button class="nav-btn" id="btnBack" title="Résultats précédents (Alt+←)" aria-label="Résultats précédents" disabled><svg><use href="#i-back"/></svg></button>
+      <button class="nav-btn" id="btnForward" title="Résultats suivants (Alt+→)" aria-label="Résultats suivants" disabled><svg><use href="#i-arrow"/></svg></button>
+    </div>
   </div>
   <nav class="tabs" role="tablist">
     <button class="tab active" data-nav="search" role="tab"><svg><use href="#i-search"/></svg><span>Rechercher</span></button>
@@ -85,9 +90,18 @@
 
     <div class="workspace">
       <section class="results-pane">
+        <div class="scope-bar" id="scopeBar" hidden>
+          <span class="scope-label">Dans</span>
+          <button class="scope-chip" id="scopeChip" title="Retirer ce dossier">
+            <svg><use href="#i-folder"/></svg>
+            <span id="scopeName"></span>
+            <span class="scope-x" aria-hidden="true">×</span>
+          </button>
+        </div>
         <div class="results-head" id="resultsHead"></div>
         <div class="results-scroll" id="resultsScroll">
           <div class="results" id="results"></div>
+          <button class="btn ghost more-btn" id="btnMore" hidden>Afficher les suivants</button>
           <div class="empty" id="emptyState">
             <div class="empty-art">
               <div class="empty-sheet s1"></div>
@@ -118,6 +132,22 @@
               <span class="idle-hint">Les boutons Ouvrir et Dossier<br>apparaissent dès la sélection.</span>
             </div>
           </div>
+          <div class="preview-tools" id="previewTools" hidden>
+            <div class="pager">
+              <button class="tool-btn" id="pagePrev" title="Page précédente (Alt+↑)">‹</button>
+              <span class="page-count"><strong id="pageNow">1</strong> / <span id="pageTotal">1</span></span>
+              <button class="tool-btn" id="pageNext" title="Page suivante (Alt+↓)">›</button>
+            </div>
+            <div class="zoom">
+              <button class="tool-btn" id="zoomOut" title="Réduire">−</button>
+              <button class="tool-btn zoom-val" id="zoomVal" title="Taille réelle">100 %</button>
+              <button class="tool-btn" id="zoomIn" title="Agrandir">+</button>
+            </div>
+          </div>
+          <div class="office-warn" id="officeWarn" hidden>
+            <span id="officeWarnText"></span>
+            <button class="btn ghost small" id="btnRetryOffice">Réessayer</button>
+          </div>
           <div class="preview-actions" id="previewActions"></div>
         </div>
       </aside>
@@ -138,6 +168,11 @@
     <div class="next-step" id="nextStep">
       <span class="next-dot"></span>
       <span id="nextStepText">Commencez par ajouter le dossier où se trouvent vos documents.</span>
+    </div>
+
+    <div class="next-step warn" id="dataAlert" hidden>
+      <span class="next-dot"></span>
+      <span id="dataAlertText"></span>
     </div>
 
     <div class="steps">
@@ -187,7 +222,10 @@
           <div class="done-icon"><svg><use href="#i-check"/></svg></div>
           <h3 id="doneTitle">Analyse terminée</h3>
           <p id="doneText"></p>
-          <button class="btn ghost small" id="btnGoSearch">Aller à la recherche</button>
+          <div class="head-actions" style="justify-content:center;margin-top:8px">
+            <button class="btn ghost small" id="btnGoSearch">Aller à la recherche</button>
+            <button class="btn ghost small" id="btnScanLog" hidden>Voir le journal</button>
+          </div>
         </div>
       </article>
 
@@ -246,7 +284,6 @@
           </div>
           <div class="head-actions">
             <button class="btn ghost small" id="btnClearCache"><svg><use href="#i-trash"/></svg> Vider le cache</button>
-            <button class="btn ghost small" id="btnOpenData"><svg><use href="#i-folder"/></svg> Dossier de données</button>
           </div>
         </section>
 
@@ -254,12 +291,23 @@
           <div class="adv-head">
             <div>
               <h3>Dossier de données</h3>
-              <p class="adv-hint">Index, cache et réglages. Si vous déplacez l'application, indiquez ici l'ancien dossier : la bibliothèque et vos réglages sont repris tels quels.</p>
-              <p class="adv-hint"><code id="dataPath">—</code></p>
+              <p>L'index de recherche, les réglages et le cache d'aperçus vivent dans ce dossier. Rien n'est envoyé sur Internet. Pour reprendre une bibliothèque existante, choisissez le dossier qui contient <code>index.db</code>.</p>
             </div>
-            <div class="head-actions">
-              <button class="btn ghost small" id="btnPickData"><svg><use href="#i-folder"/></svg> Choisir…</button>
-            </div>
+          </div>
+          <div class="data-card">
+            <code class="data-path" id="dataPath">—</code>
+            <div class="data-meta" id="dataMeta"></div>
+            <p class="data-warn" id="dataWarn" hidden></p>
+            <details class="data-more">
+              <summary>Autres emplacements examinés</summary>
+              <div id="dataCandidates"></div>
+            </details>
+          </div>
+          <div class="head-actions" style="margin-top:10px">
+            <button class="btn ghost small" id="btnOpenData"><svg><use href="#i-folder"/></svg> Ouvrir le dossier</button>
+            <button class="btn ghost small" id="btnCopyData"><svg><use href="#i-copy"/></svg> Copier le chemin</button>
+            <button class="btn ghost small" id="btnPickData"><svg><use href="#i-folder"/></svg> Choisir…</button>
+            <button class="btn ghost small" id="btnDiag"><svg><use href="#i-shield"/></svg> Copier le diagnostic</button>
           </div>
         </section>
       </div>

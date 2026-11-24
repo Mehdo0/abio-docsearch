@@ -14,14 +14,24 @@ const S = {
   query: "",
   type: "all",
   sort: "relevance",
+  folder: "",
   results: [],
   folders: [],
+  total: 0,
+  pageSize: 200,
   selected: -1,
   previewItem: null,
   previewToken: 0,
   previewTimer: null,
   searchTimer: null,
   searchToken: 0,
+  page: 1,
+  pages: 1,
+  pageToken: 0,
+  zoom: 1,
+  history: [],
+  hIndex: -1,
+  lastPush: 0,
   scanning: false,
   pollTimer: null,
   cfg: { roots: [], exclude_dirs: [], exclude_exts: [], exclude_names: [], threads: 8 },
@@ -89,7 +99,10 @@ async function init() {
   fillSettings();
   renderIndex();
   renderAbout();
-  renderDataPath();
+  renderData();
+  renderScope();
+  renderMore();
+  updateHistoryButtons();
 
   if (!S.boot.stats.files) {
     nav("index");
@@ -110,7 +123,7 @@ function wire() {
   input.addEventListener("input", () => {
     S.query = input.value.trim();
     clearTimeout(S.searchTimer);
-    S.searchTimer = setTimeout(runSearch, 130);
+    S.searchTimer = setTimeout(() => runSearch({ coalesce: true }), 130);
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") {
@@ -133,12 +146,14 @@ function wire() {
   $("#results").addEventListener("click", (event) => {
     const folder = event.target.closest(".folder-row");
     if (folder) {
-      const value = folder.dataset.name || "";
-      $("#q").value = value;
-      S.query = value;
-      S.type = "all";
-      $$("#typeChips .chip").forEach((c) => c.classList.toggle("active", c.dataset.type === "all"));
-      runSearch();
+      const action = event.target.closest("[data-act]");
+      if (action && action.dataset.act === "open") {
+        Bridge.call("open_folder", folder.dataset.path).then((r) => {
+          if (!r.ok) toast(r.error || "Dossier introuvable", true);
+        });
+        return;
+      }
+      scopeFolder(folder.dataset.path);
       return;
     }
     const row = event.target.closest(".result");
@@ -166,6 +181,27 @@ function wire() {
 
   document.addEventListener("keydown", onKey);
 
+  // historique, dossier, pagination
+  $("#btnBack").addEventListener("click", () => goHistory(-1));
+  $("#btnForward").addEventListener("click", () => goHistory(1));
+  $("#scopeChip").addEventListener("click", clearScope);
+  $("#btnMore").addEventListener("click", () => runSearch({ append: true, push: false }));
+  $("#pagePrev").addEventListener("click", () => goPage(S.page - 1));
+  $("#pageNext").addEventListener("click", () => goPage(S.page + 1));
+  $("#zoomOut").addEventListener("click", () => setZoom(S.zoom - 0.25));
+  $("#zoomIn").addEventListener("click", () => setZoom(S.zoom + 0.25));
+  $("#zoomVal").addEventListener("click", () => setZoom(1));
+  $("#btnRetryOffice").addEventListener("click", retryOffice);
+  $("#previewBody").addEventListener("wheel", (event) => {
+    if (!event.ctrlKey) return;
+    event.preventDefault();
+    setZoom(S.zoom + (event.deltaY < 0 ? 0.25 : -0.25));
+  }, { passive: false });
+  document.addEventListener("auxclick", (event) => {
+    if (event.button === 3) { event.preventDefault(); goHistory(-1); }
+    if (event.button === 4) { event.preventDefault(); goHistory(1); }
+  });
+
   // index
   $("#btnAddRoot").addEventListener("click", addRoot);
   $("#btnScan").addEventListener("click", startScan);
@@ -175,6 +211,21 @@ function wire() {
   $("#btnOpenData").addEventListener("click", async () => {
     const r = await Bridge.call("open_data_dir");
     if (!r.ok) toast(r.error || "Impossible d'ouvrir le dossier", true);
+  });
+  $("#btnCopyData").addEventListener("click", async () => {
+    const path = S.boot?.data?.path || S.boot?.data_dir;
+    if (!path) return;
+    const r = await Bridge.call("copy_path", path);
+    toast(r.ok ? "Chemin copié" : "Copie impossible", !r.ok);
+  });
+  $("#btnDiag").addEventListener("click", async () => {
+    const r = await Bridge.call("copy_diagnostic");
+    toast(r.ok ? "Diagnostic copié : collez-le dans un message"
+               : "Copie impossible", !r.ok);
+  });
+  $("#btnScanLog").addEventListener("click", async () => {
+    const r = await Bridge.call("open_scan_log");
+    if (!r.ok) toast(r.error || "Journal indisponible", true);
   });
   $("#btnPickData").addEventListener("click", async () => {
     const r = await Bridge.call("choose_data_dir");
@@ -286,14 +337,161 @@ function renderHead(data) {
       : `<span>Aucun document indexé — ouvrez l'onglet <strong>Index</strong> pour commencer.</span>`;
     return;
   }
-  const count = S.results.length;
-  head.innerHTML = `<strong>${fmtInt(count)}</strong> document${count > 1 ? "s" : ""}`
-    + (S.folders.length ? `<span class="dot"></span><strong>${fmtInt(S.folders.length)}</strong> dossier${S.folders.length > 1 ? "s" : ""}` : "")
-    + `<span class="dot"></span>${data.ms} ms`
-    + `<span class="spacer"></span><span class="index-summary">trié par ${esc($("#sort").selectedOptions[0].textContent.toLowerCase())}</span>`;
+  const shown = S.results.length;
+  const total = S.total || shown;
+  const scoped = !!S.folder;
+  let label = `${fmtInt(total)} ${S.query || !scoped ? "résultat" : "document"}${total > 1 ? "s" : ""}`;
+  if (!S.query && scoped) label = `${fmtInt(total)} document${total > 1 ? "s" : ""} dans ce dossier`;
+  let html = `<strong>${label.split(" ")[0]}</strong>${label.slice(label.indexOf(" "))}`;
+  if (total > shown) html += `<span class="dot"></span>${fmtInt(shown)} affichés`;
+  if (S.folders.length) html += `<span class="dot"></span><strong>${fmtInt(S.folders.length)}</strong> dossier${S.folders.length > 1 ? "s" : ""}`;
+  html += `<span class="dot"></span>${data.ms} ms`;
+  html += `<span class="spacer"></span><span class="index-summary">trié par ${esc($("#sort").selectedOptions[0].textContent.toLowerCase())}</span>`;
+  head.innerHTML = html;
 }
 
-function renderResults(data) {
+/* -------------------------------------------------------------- historique */
+
+function currentState() {
+  return { q: S.query, type: S.type, sort: S.sort, folder: S.folder };
+}
+
+function sameState(a, b) {
+  return !!a && !!b && a.q === b.q && a.type === b.type
+    && a.sort === b.sort && a.folder === b.folder;
+}
+
+function pushHistory(coalesce = false) {
+  const state = currentState();
+  const top = S.history[S.hIndex];
+  if (sameState(top, state)) return;
+  const now = Date.now();
+  // Une frappe continue met à jour la même entrée : le retour ramène au
+  // début de la recherche, pas à chaque lettre.
+  const replace = coalesce && top && S.hIndex === S.history.length - 1
+    && now - S.lastPush < 1400;
+  if (replace) {
+    S.history[S.hIndex] = state;
+  } else {
+    S.history = S.history.slice(0, S.hIndex + 1);
+    S.history.push(state);
+    if (S.history.length > 40) S.history.shift();
+    S.hIndex = S.history.length - 1;
+  }
+  S.lastPush = now;
+  updateHistoryButtons();
+}
+
+function updateHistoryButtons() {
+  $("#btnBack").disabled = S.hIndex <= 0;
+  $("#btnForward").disabled = S.hIndex >= S.history.length - 1;
+}
+
+async function goHistory(delta) {
+  const target = S.hIndex + delta;
+  if (target < 0 || target >= S.history.length) return;
+  const state = S.history[target];
+  S.hIndex = target;
+  S.lastPush = 0;
+  S.query = state.q;
+  S.type = state.type;
+  S.sort = state.sort;
+  S.folder = state.folder;
+  $("#q").value = state.q;
+  $("#sort").value = state.sort;
+  $$("#typeChips .chip").forEach((chip) => {
+    chip.classList.toggle("active", chip.dataset.type === state.type);
+  });
+  renderScope();
+  updateHistoryButtons();
+  await runSearch({ push: false });
+  $("#q").focus();
+}
+
+/* ---------------------------------------------------------------- recherche */
+
+function renderScope() {
+  const bar = $("#scopeBar");
+  bar.hidden = !S.folder;
+  if (!S.folder) return;
+  const clean = S.folder.replace(/[\\/]+$/, "");
+  const name = clean.split(/[\\/]/).pop() || clean;
+  $("#scopeName").textContent = name;
+  $("#scopeChip").title = `Retirer le dossier ${S.folder}`;
+}
+
+function renderMore() {
+  const button = $("#btnMore");
+  const remaining = (S.total || 0) - S.results.length;
+  button.hidden = remaining <= 0 || S.results.length === 0;
+  if (!button.hidden) {
+    button.textContent = `Afficher les ${fmtInt(Math.min(S.pageSize, remaining))} suivants`;
+  }
+}
+
+function scopeFolder(path) {
+  if (!path) return;
+  S.folder = path;
+  renderScope();
+  runSearch({ push: true });
+  $("#q").focus();
+}
+
+function clearScope() {
+  if (!S.folder) return;
+  S.folder = "";
+  renderScope();
+  runSearch({ push: true });
+}
+
+async function runSearch(opts = {}) {
+  const { push = true, coalesce = false, append = false } = opts;
+  const token = ++S.searchToken;
+  const useful = S.query.length >= 2 || S.type !== "all" || !!S.folder;
+  if (!useful) {
+    S.results = [];
+    S.folders = [];
+    S.total = 0;
+    S.selected = -1;
+    $("#results").innerHTML = "";
+    renderHead();
+    renderMore();
+    showEmpty(true, "search");
+    return;
+  }
+  if (push) pushHistory(coalesce);
+
+  const offset = append ? S.results.length : 0;
+  const groups = S.type === "all" ? [] : [S.type];
+  const data = await Bridge.call(
+    "search", S.query, groups, S.sort, S.pageSize, S.folder, offset
+  );
+  if (token !== S.searchToken) return;
+  if (data.error) {
+    toast("Recherche impossible : " + data.error, true);
+    return;
+  }
+
+  const files = data.files || [];
+  S.results = append ? S.results.concat(files) : files;
+  const dirs = data.folders || [];
+  const prefix = S.folder.toLowerCase();
+  S.folders = S.folder
+    ? dirs.filter((folder) => {
+        const path = folder.path.toLowerCase();
+        return path.startsWith(prefix) && path !== prefix.replace(/[\\/]+$/, "");
+      })
+    : dirs;
+  S.total = Number(data.total || 0);
+  if (!append) S.selected = -1;
+
+  renderResults(data);
+  renderHead(data);
+  renderMore();
+  if (!append && files.length) select(0, false, false, 320);
+}
+
+function renderResults() {
   const box = $("#results");
   let html = "";
 
@@ -301,13 +499,20 @@ function renderResults(data) {
     html += `<div class="section-label">Dossiers</div>`;
     S.folders.forEach((folder) => {
       html += `
-        <div class="folder-row" data-name="${esc(folder.name)}">
+        <div class="folder-row" data-path="${esc(folder.path)}" data-name="${esc(folder.name)}">
           <div class="type-icon type-folder"><svg><use href="#i-folder"/></svg></div>
-          <div>
+          <div class="folder-text">
             <div class="folder-name">${highlight(folder.name, S.query)}</div>
             <div class="folder-path">${esc(folder.path)}</div>
           </div>
-          <svg class="go"><use href="#i-arrow"/></svg>
+          <div class="folder-actions">
+            <button class="mini-btn" data-act="scope" title="Chercher dans ce dossier">
+              <svg><use href="#i-search"/></svg><span>Chercher ici</span>
+            </button>
+            <button class="mini-btn icon" data-act="open" title="Ouvrir dans l'explorateur">
+              <svg><use href="#i-external"/></svg>
+            </button>
+          </div>
         </div>`;
     });
     if (S.results.length) html += `<div class="section-label">Documents</div>`;
@@ -337,8 +542,13 @@ function showEmpty(show, mode = "search") {
   el.classList.toggle("show", show);
   if (!show) return;
   if (mode === "noresult") {
-    $("#emptyTitle").textContent = S.query ? `Rien pour « ${S.query} »` : "Rien dans cette catégorie";
-    $("#emptyText").innerHTML = "Essayez un mot plus court, un nom de dossier,<br>ou retirez le filtre de type.";
+    const where = S.folder ? " dans ce dossier" : "";
+    $("#emptyTitle").textContent = S.query
+      ? `Rien pour « ${S.query} »${where}`
+      : (S.folder ? "Rien dans ce dossier" : "Rien dans cette catégorie");
+    $("#emptyText").innerHTML = S.folder
+      ? "Retirez le dossier avec la croix au-dessus,<br>ou changez de mot."
+      : "Essayez un mot plus court, un nom de dossier,<br>ou retirez le filtre de type.";
     $("#recentBlock").hidden = true;
   } else {
     $("#emptyTitle").textContent = "Cherchez dans tout le partage";
@@ -425,7 +635,10 @@ function renderSkeleton() {
       <div class="skel skel-line"></div>
       <div class="skel skel-line short"></div>
     </div>`;
+  updatePreviewTools(null);
+  updateOfficeWarn(null);
 }
+
 
 async function previewFor(item) {
   if (!item) return;
@@ -490,11 +703,13 @@ function renderPreviewBody(result, item) {
   if (result.kind === "image") {
     body.innerHTML = `
       <div class="paper-frame">
-        <img class="paper-img" alt="Première page de ${esc(item.name)}"
+        <img class="paper-img" alt="Page ${result.page || 1} de ${esc(item.name)}"
              src="data:image/jpeg;base64,${result.data}">
       </div>`;
     const src = result.source === "pdf" ? "PDF" : result.source === "image" ? "Image" : "Office";
-    $("#previewFlag").innerHTML = `${result.cached ? '<span class="spark">●</span> ' : ""}page 1 · ${src} · ${result.ms} ms`;
+    $("#previewFlag").innerHTML = `${result.cached ? '<span class="spark">●</span> ' : ""}page ${result.page || 1} · ${src} · ${result.ms} ms`;
+    updatePreviewTools(result);
+    updateOfficeWarn(result);
     return;
   }
 
@@ -513,6 +728,93 @@ function renderPreviewBody(result, item) {
       </div>
     </div>`;
   $("#previewFlag").textContent = result.note ? "aperçu texte" : `texte · ${result.ms} ms`;
+  updatePreviewTools(null);
+  updateOfficeWarn(result);
+}
+
+/* --------------------------------------------------- pages, zoom, reprise */
+
+const ZOOMS = [0.75, 1, 1.25, 1.5, 2];
+
+function updatePreviewTools(result) {
+  const tools = $("#previewTools");
+  if (!result || result.kind !== "image") {
+    tools.hidden = true;
+    return;
+  }
+  S.page = Number(result.page || 1);
+  S.pages = Number(result.pages || 1);
+  tools.hidden = false;
+  $("#pageNow").textContent = S.page;
+  $("#pageTotal").textContent = S.pages;
+  $("#pagePrev").disabled = S.page <= 1;
+  $("#pageNext").disabled = S.page >= S.pages;
+  $("#zoomVal").textContent = `${Math.round(S.zoom * 100)} %`;
+  applyZoom();
+}
+
+function applyZoom() {
+  const img = document.querySelector("#previewBody .paper-img");
+  if (!img) return;
+  if (S.zoom === 1) {
+    img.style.width = "";
+    img.style.maxWidth = "";
+    img.style.maxHeight = "";
+    return;
+  }
+  img.style.width = `${Math.round(S.zoom * 100)}%`;
+  img.style.maxWidth = "none";
+  img.style.maxHeight = "none";
+}
+
+function updateOfficeWarn(result) {
+  const box = $("#officeWarn");
+  if (result && result.office_failed) {
+    box.hidden = false;
+    $("#officeWarnText").textContent = result.note
+      || `${result.office_app || "Office"} n'a pas répondu. Aperçu texte affiché.`;
+  } else {
+    box.hidden = true;
+  }
+}
+
+async function goPage(page) {
+  const item = S.previewItem;
+  if (!item) return;
+  const target = Math.max(1, Math.min(S.pages, Number(page) || 1));
+  if (target === S.page) return;
+  const token = ++S.pageToken;
+  $("#previewFlag").textContent = `page ${target}…`;
+  const result = await Bridge.call("preview_page", item.path, target, S.zoom);
+  if (token !== S.pageToken) return;
+  if (!result.ok) {
+    toast(result.error || "Page indisponible", true);
+    $("#pageNow").textContent = S.page;
+    return;
+  }
+  renderPreviewBody(result, item);
+}
+
+let _zoomTimer = 0;
+
+function setZoom(value) {
+  const next = ZOOMS.reduce(
+    (best, candidate) => (Math.abs(candidate - value) < Math.abs(best - value) ? candidate : best),
+    1
+  );
+  if (next === S.zoom) return;
+  S.zoom = next;
+  $("#zoomVal").textContent = `${Math.round(S.zoom * 100)} %`;
+  applyZoom();
+  clearTimeout(_zoomTimer);
+  _zoomTimer = setTimeout(async () => {
+    const item = S.previewItem;
+    if (!item) return;
+    const token = ++S.pageToken;
+    const result = await Bridge.call("preview_page", item.path, S.page, S.zoom);
+    if (token !== S.pageToken || !result.ok) return;
+    renderPreviewBody(result, item);
+  }, 180);
 }
 
 function renderPreviewError(result) {
@@ -525,6 +827,8 @@ function renderPreviewError(result) {
       <div style="margin-top:6px;font-size:10.5px">Vous pouvez quand même l'ouvrir avec le bouton ci-dessous.</div>
     </div>`;
   $("#previewFlag").textContent = "";
+  updatePreviewTools(null);
+  updateOfficeWarn(null);
 }
 
 async function openItem(item) {
@@ -532,6 +836,22 @@ async function openItem(item) {
   const r = await Bridge.call("open_file", item.path);
   if (!r.ok) toast(r.error || "Impossible d'ouvrir le document", true);
   else if (r.note) toast(r.note);
+}
+
+async function retryOffice() {
+  const item = S.previewItem;
+  if (!item) return;
+  const result = await Bridge.call("retry_office");
+  if (!result.ok) {
+    toast("Impossible de réessayer", true);
+    return;
+  }
+  const body = $("#previewBody");
+  body.dataset.path = "";
+  body.dataset.failed = "";
+  S.previewItem = null;
+  toast(result.office ? "Nouvelle tentative…" : "Office reste indisponible");
+  await previewFor(item);
 }
 
 /* ------------------------------------------------------------------ index */
@@ -569,6 +889,7 @@ function renderIndex() {
                    : `${fmtInt(count)} dossiers prêts. L'analyse ne modifie rien.`)
     : "Ajoutez d'abord un dossier à l'étape 1.";
   updateAdvancedSummary();
+  renderDataAlert();
 }
 
 function updateAdvancedSummary() {
@@ -679,12 +1000,32 @@ async function pollScan() {
       toast("Analyse interrompue : " + st.error, true);
     } else {
       const res = st.result || {};
-      $("#doneTitle").textContent = res.cancelled ? "Analyse arrêtée" : "Analyse terminée";
-      const ignored = res.ignored ? ` · ${fmtInt(res.ignored)} fichiers ignorés` : "";
-      $("#doneText").innerHTML = res.cancelled
-        ? `${fmtInt(res.files || 0)} documents dans l'index. Vous pourrez relancer l'analyse plus tard.`
-        : `${fmtInt(res.files || 0)} documents · ${fmtInt(res.dirs || 0)} dossiers · ${res.elapsed || 0} s${ignored}`;
-      toast(res.cancelled ? "Analyse arrêtée" : "Index à jour");
+      const failed = res.failed_roots || [];
+      $("#doneTitle").textContent = res.cancelled
+        ? "Analyse arrêtée"
+        : (res.files ? "Analyse terminée" : "Aucun document indexé");
+      let html;
+      if (res.cancelled) {
+        html = `${fmtInt(res.files || 0)} documents dans l'index. Vous pourrez relancer l'analyse plus tard.`;
+      } else {
+        html = `${fmtInt(res.files || 0)} documents · ${fmtInt(res.dirs || 0)} dossiers · ${res.elapsed || 0} s`
+             + ` · ${fmtInt(res.visited || 0)} fichiers examinés`;
+        if (res.ignored) html += ` · ${fmtInt(res.ignored)} ignorés par vos filtres`;
+        if (failed.length) {
+          html += `<br>Dossiers inaccessibles : ${failed.map(esc).join(", ")}.`;
+        }
+        if (res.purged === false) {
+          html += "<br><strong>Index conservé tel quel :</strong> un dossier demandé n'a pas pu être lu.";
+        }
+        if (!res.files) {
+          html += `<br>L'index est écrit dans <code>${esc(S.boot?.data?.path || "")}</code>.`;
+        }
+      }
+      $("#doneText").innerHTML = html;
+      $("#btnScanLog").hidden = !res.errors;
+      toast(res.cancelled ? "Analyse arrêtée"
+                          : (res.files ? "Index à jour" : "Aucun document indexé"),
+            !res.files && !res.cancelled);
       await refreshBoot();
     }
   }
@@ -708,12 +1049,74 @@ async function refreshBoot() {
   renderRecent();
   renderRoots();
   renderIndex();
-  renderDataPath();
+  renderData();
 }
 
-function renderDataPath() {
-  const path = S.boot?.data_dir;
+function renderData() {
+  const data = S.boot?.data || {};
+  const stats = S.boot?.stats || {};
+  const path = data.path || S.boot?.data_dir || "";
   if (path) $("#dataPath").textContent = path;
+
+  const meta = [];
+  if (data.has_index) {
+    meta.push(`<span class="data-badge ok">${fmtInt(stats.files)} documents</span>`);
+    meta.push(`<span class="data-badge">index ${esc(data.index_human || "0 o")}</span>`);
+  } else {
+    meta.push(`<span class="data-badge warn">aucun index : créé au premier scan</span>`);
+  }
+  meta.push(`<span class="data-badge">origine : ${esc(data.source || "—")}</span>`);
+  if (data.writable === false) {
+    meta.push(`<span class="data-badge warn">dossier non inscriptible</span>`);
+  }
+  if (data.previews_bytes) {
+    meta.push(`<span class="data-badge">aperçus ${esc(humanBytes(data.previews_bytes))}</span>`);
+  }
+  $("#dataMeta").innerHTML = meta.join("");
+
+  const warn = data.warnings || [];
+  $("#dataWarn").hidden = !warn.length;
+  $("#dataWarn").innerHTML = warn.map((w) => esc(w)).join("<br>");
+
+  const candidates = (data.candidates || []).filter((c) => c.path);
+  $("#dataCandidates").innerHTML = candidates.length
+    ? candidates.map((c) => `
+        <div class="data-candidate${c.path === path ? " current" : ""}">
+          <span class="data-candidate-label">${esc(c.label)}</span>
+          <code>${esc(c.path)}</code>
+          <span class="data-candidate-state">${c.has_index ? "index " + esc(humanBytes(c.bytes)) : "pas d'index"}</span>
+        </div>`).join("")
+    : `<p class="adv-hint">Aucun autre emplacement.</p>`;
+
+  renderDataAlert();
+}
+
+function humanBytes(bytes) {
+  const units = ["o", "Ko", "Mo", "Go"];
+  let value = Number(bytes) || 0;
+  let i = 0;
+  while (value >= 1024 && i < units.length - 1) { value /= 1024; i += 1; }
+  return `${i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+}
+
+function renderDataAlert() {
+  const box = $("#dataAlert");
+  if (!box) return;
+  const data = S.boot?.data || {};
+  const stats = S.boot?.stats || {};
+  let message = "";
+  if (S.boot?.stats_error) {
+    message = `<strong>L'index n'a pas pu être ouvert.</strong> ${esc(S.boot.stats_error)}`
+      + `<br>Dossier utilisé : <code>${esc(data.path || "?")}</code>`;
+  } else if (!data.has_index) {
+    message = `<strong>Aucun index dans le dossier de données.</strong> Il sera créé au premier scan ici : <code>${esc(data.path || "?")}</code>`;
+  } else if ((data.warnings || []).length) {
+    message = (data.warnings || []).map((w) => esc(w)).join("<br>");
+  } else if (!stats.files && (S.cfg.roots || []).length) {
+    message = `<strong>L'index est vide.</strong> Lancez « Analyser maintenant » : l'index sera écrit dans <code>${esc(data.path || "?")}</code>`;
+  }
+  box.hidden = !message;
+  $("#dataAlertText").innerHTML = message;
 }
 
 function renderAbout() {
@@ -727,6 +1130,21 @@ function onKey(event) {
   const input = $("#q");
   const inInput = document.activeElement === input;
 
+  if (event.altKey && event.key === "ArrowLeft") {
+    event.preventDefault();
+    goHistory(-1);
+    return;
+  }
+  if (event.altKey && event.key === "ArrowRight") {
+    event.preventDefault();
+    goHistory(1);
+    return;
+  }
+  if (event.altKey && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+    event.preventDefault();
+    goPage(S.page + (event.key === "ArrowDown" ? 1 : -1));
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     nav("search");
@@ -739,6 +1157,8 @@ function onKey(event) {
       input.value = "";
       S.query = "";
       runSearch();
+    } else if (S.folder) {
+      clearScope();
     } else {
       nav("search");
     }
