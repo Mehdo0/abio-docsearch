@@ -231,3 +231,84 @@ def test_recherche_limitee_a_un_dossier(tmp_path: Path) -> None:
     parent = str(share / "Qualite")
     result = catalog.search("", folder=parent)
     assert result["total"] == 2
+
+
+def test_fichier_supprime_quitte_l_index(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    (share / "Qualite" / "CRS" / "Rapport_définitif_abioCALIB.pdf").unlink()
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["gone"] == 1
+    assert second["files"] == 2
+    assert catalog.search("definitif")["files"] == []
+
+
+def test_dossier_supprime_retire_tout_son_contenu(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+    assert catalog.search("validation")["files"], "le document doit être indexé"
+
+    import shutil
+    shutil.rmtree(share / "Qualite" / "PRS")
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["files"] == 2
+    assert catalog.search("validation")["files"] == []
+    con = catalog.con()
+    assert con.execute("SELECT count(*) FROM folders WHERE name='PRS'").fetchone()[0] == 0
+    assert con.execute("SELECT count(*) FROM fts_dirs WHERE fts_dirs MATCH 'PRS'").fetchone()[0] == 0
+
+
+def test_renommage_ne_laisse_pas_de_fantome(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    dossier = share / "Qualite" / "CRS"
+    (dossier / "Rapport_définitif_abioCALIB.pdf").rename(dossier / "Rapport_final_abioCALIB.pdf")
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["files"] == 3
+    assert second["gone"] == 1
+    assert catalog.search("definitif")["files"] == []
+    assert [f["name"] for f in catalog.search("final")["files"]] == ["Rapport_final_abioCALIB.pdf"]
+
+
+def test_sous_dossier_illisible_ne_supprime_rien(tmp_path: Path) -> None:
+    """Un dossier refusé n'est pas réconcilié : ses documents restent indexés."""
+    if not hasattr(__import__("os"), "geteuid") or __import__("os").geteuid() == 0:
+        return
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    premier = catalog.scan([str(share)], CONFIG)
+    assert premier["files"] == 3
+
+    prs = share / "Qualite" / "PRS"
+    prs.chmod(0o000)
+    try:
+        second = catalog.scan([str(share)], CONFIG)
+    finally:
+        prs.chmod(0o755)
+
+    assert second["files"] == 3, "rien ne doit disparaître de l'index"
+    assert catalog.search("validation")["files"], "le document reste cherchable"
+
+
+def test_compactage_pas_a_chaque_analyse(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+    premier = catalog.stats()["last_optimize"]
+    assert premier
+
+    catalog.scan([str(share)], CONFIG)
+    assert catalog.stats()["last_optimize"] == premier

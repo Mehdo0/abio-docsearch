@@ -23,7 +23,7 @@ from typing import Callable, Iterable
 from .paths import as_list, human_size
 from .winpath import display_path, io_path
 
-SCHEMA_VERSION = "3.1"
+SCHEMA_VERSION = "3.2"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs (
@@ -48,6 +48,7 @@ CREATE TABLE IF NOT EXISTS folders (
     path    TEXT UNIQUE NOT NULL,
     name    TEXT NOT NULL,
     depth   INTEGER,
+    parent  TEXT,
     status  TEXT DEFAULT 'new',
     scan_id INTEGER
 );
@@ -60,7 +61,9 @@ CREATE INDEX IF NOT EXISTS idx_docs_status ON docs(status);
 CREATE INDEX IF NOT EXISTS idx_docs_scan ON docs(scan_id);
 CREATE INDEX IF NOT EXISTS idx_docs_ext ON docs(ext);
 CREATE INDEX IF NOT EXISTS idx_docs_mtime ON docs(mtime DESC);
+CREATE INDEX IF NOT EXISTS idx_docs_folder ON docs(folder, path);
 CREATE INDEX IF NOT EXISTS idx_dirs_status ON folders(status);
+CREATE INDEX IF NOT EXISTS idx_dirs_parent ON folders(parent, path);
 """
 
 TYPE_GROUPS: dict[str, tuple[str, ...]] = {
@@ -110,27 +113,60 @@ def open_db(path: str | Path) -> sqlite3.Connection:
     con.executescript(SCHEMA)
     con.commit()
     with _migrate_lock:
-        version = con.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone()
-        if not version or version[0] != SCHEMA_VERSION:
-            # les index v2 n'ont pas la forme découpée des noms
-            con.execute("DELETE FROM meta WHERE k='schema_version'")
+        _migrate(con)
+    return con
+
+
+def _version_tuple(value: str | None) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in str(value).split("."))
+    except (TypeError, ValueError):
+        return (0,)
+
+
+def _migrate(con: sqlite3.Connection) -> None:
+    """Met l'index à niveau, sans reconstruire ce qui n'a pas changé."""
+    row = con.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone()
+    version = row[0] if row else None
+    if version == SCHEMA_VERSION:
+        return
+
+    # v3.1 : les index v2 n'avaient pas la forme découpée des noms.
+    if version is None or _version_tuple(version) < (3, 1):
+        fixed = False
+        cursor = con.execute("SELECT id, name FROM docs WHERE body IS NULL OR body=''")
+        while True:
+            rows = cursor.fetchmany(5000)
+            if not rows:
+                break
+            con.executemany(
+                "UPDATE docs SET body=? WHERE id=?",
+                [(expand_name(r[1]), r[0]) for r in rows],
+            )
             con.commit()
-            cursor = con.execute("SELECT id, name FROM docs WHERE body IS NULL OR body=''")
-            while True:
-                rows = cursor.fetchmany(5000)
-                if not rows:
-                    break
-                con.executemany(
-                    "UPDATE docs SET body=? WHERE id=?",
-                    [(expand_name(r[1]), r[0]) for r in rows],
-                )
-                con.commit()
+            fixed = True
+        if fixed or con.execute("SELECT 1 FROM docs LIMIT 1").fetchone():
             con.execute("INSERT INTO fts(fts) VALUES('rebuild')")
             con.execute("INSERT INTO fts_dirs(fts_dirs) VALUES('rebuild')")
-            con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)",
-                        (SCHEMA_VERSION,))
-            con.commit()
-    return con
+
+    # v3.2 : réconciliation par dossier. Le parent est stocké pour pouvoir
+    # comparer les sous-dossiers d'un dossier sans balayer toute la base.
+    columns = {r[1] for r in con.execute("PRAGMA table_info(folders)")}
+    if "parent" not in columns:
+        con.execute("ALTER TABLE folders ADD COLUMN parent TEXT")
+    orphans = con.execute(
+        "SELECT id, path FROM folders WHERE parent IS NULL"
+    ).fetchall()
+    if orphans:
+        con.executemany(
+            "UPDATE folders SET parent=? WHERE id=?",
+            [(os.path.dirname(path), ident) for ident, path in orphans],
+        )
+    con.execute("CREATE INDEX IF NOT EXISTS idx_docs_folder ON docs(folder, path)")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_dirs_parent ON folders(parent, path)")
+    con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)",
+                (SCHEMA_VERSION,))
+    con.commit()
 
 
 def build_query(raw: str) -> str | None:
@@ -161,9 +197,18 @@ def walk_paths(
     skipped: list,
     cancel: threading.Event | None = None,
     failed_roots: list | None = None,
-) -> Iterable[tuple]:
-    """Rend les entrées au fil de l'eau, sans aucun ``open()``."""
-    out: queue.Queue = queue.Queue(maxsize=20000)
+) -> Iterable[tuple[str, int, bool, list[tuple]]]:
+    """Rend un lot par dossier : (dossier, profondeur, lisible, entrées).
+
+    Les entrées d'un dossier arrivent groupées : c'est ce qui permet de
+    comparer ce dossier avec ce que l'index connaît de lui, et donc de retirer
+    les fichiers disparus sans balayer tout l'index.
+
+    ``lisible`` vaut False quand le dossier n'a pas pu être listé en entier
+    (droits, partage coupé, arrêt demandé) : dans ce cas l'appelant ne doit
+    rien supprimer pour ce dossier.
+    """
+    out: queue.Queue = queue.Queue(maxsize=4000)
     work: queue.Queue = queue.Queue()
     seen_dirs: set[str] = set()
     lock = threading.Lock()
@@ -180,12 +225,14 @@ def walk_paths(
                         return
                 continue
             items: list[tuple] = []
+            ok = True
             try:
                 # Préfixe étendu : sans lui, un dossier dont le chemin dépasse
                 # 260 caractères est invisible pour Windows.
                 with os.scandir(io_path(folder)) as it:
                     for entry in it:
                         if cancel is not None and cancel.is_set():
+                            ok = False
                             break
                         child = display_path(os.path.join(folder, entry.name))
                         try:
@@ -203,7 +250,7 @@ def walk_paths(
                                 seen_dirs.add(key)
                                 active[0] += 1
                             on_dir()
-                            items.append(("d", child, entry.name, depth + 1))
+                            items.append(("d", child, entry.name))
                             work.put((child, depth + 1))
                         else:
                             on_tick(1)
@@ -216,18 +263,17 @@ def walk_paths(
                                 size, mtime, kind = 0, 0, "file"
                             items.append(("f", child, entry.name, size, mtime, kind))
             except PermissionError:
+                ok = False
                 errors.append((folder, "acces refuse"))
-                if depth == 0 and failed_roots is not None:
-                    failed_roots.append(folder)
             except OSError as exc:
+                ok = False
                 errors.append((folder, str(exc)))
-                if depth == 0 and failed_roots is not None:
-                    failed_roots.append(folder)
             finally:
                 with lock:
                     active[0] -= 1
-            if items:
-                out.put(items)
+            if not ok and depth == 0 and failed_roots is not None:
+                failed_roots.append(folder)
+            out.put((folder, depth, ok, items))
             on_render(folder)
 
     for root in roots:
@@ -242,7 +288,7 @@ def walk_paths(
 
     while True:
         try:
-            items = out.get(timeout=0.5)
+            item = out.get(timeout=0.5)
         except queue.Empty:
             if stop.is_set() or (cancel is not None and cancel.is_set()):
                 break
@@ -250,8 +296,7 @@ def walk_paths(
                 break
             on_render("")
             continue
-        for item in items:
-            yield item
+        yield item
     stop.set()
     for w in workers:
         w.join(timeout=3)
@@ -288,16 +333,22 @@ class Catalog:
         progress: Callable[[dict], None] | None = None,
         cancel: threading.Event | None = None,
     ) -> dict:
+        """Parcourt les racines et met l'index à jour dossier par dossier.
+
+        Chaque dossier listé est comparé à ce que l'index connaît de lui : les
+        fichiers absents du disque sont retirés tout de suite. Un dossier
+        illisible n'est jamais réconcilié, donc une coupure réseau ne peut pas
+        vider l'index.
+        """
         con = self.con()
         scan_id = int(time.time())
-        con.execute("CREATE TEMP TABLE IF NOT EXISTS seen(path TEXT PRIMARY KEY) WITHOUT ROWID")
-        con.execute("CREATE TEMP TABLE IF NOT EXISTS seen_dir(path TEXT PRIMARY KEY) WITHOUT ROWID")
-        con.execute("DELETE FROM seen")
-        con.execute("DELETE FROM seen_dir")
 
         excluded = {norm(x) for x in as_list(config.get("exclude_dirs"))}
-        threads = int(config.get("threads", 8) or 8)
-        include = {e.lower() for e in as_list(config.get("include_exts"))}
+        threads = max(1, min(64, int(config.get("threads", 24) or 24)))
+        include = {
+            (e.lower() if e.lower().startswith(".") else "." + e.lower())
+            for e in as_list(config.get("include_exts"))
+        }
         exclude_exts = {
             (e.lower() if e.lower().startswith(".") else "." + e.lower())
             for e in as_list(config.get("exclude_exts"))
@@ -308,12 +359,11 @@ class Catalog:
         skipped: list = []
         failed_roots: list[str] = []
         t0 = time.perf_counter()
-        counters = {"files": 0, "dirs": 0, "added": 0, "visited": 0, "ignored": 0}
+        counters = {"files": 0, "dirs": 0, "added": 0, "visited": 0,
+                    "ignored": 0, "gone": 0}
         last_emit = [0.0]
-        current = [""]
-        batch: list[tuple] = []
-        folder_batch: list[tuple] = []
         last_flush = [time.perf_counter()]
+        current = [""]
 
         def emit(force: bool = False) -> None:
             if progress is None:
@@ -334,127 +384,197 @@ class Catalog:
                 "elapsed": round(now - t0, 1),
             })
 
-        def flush(force: bool = False) -> None:
-            if batch:
+        def commit_if_due(force: bool = False) -> None:
+            if force or time.perf_counter() - last_flush[0] > 5:
+                con.commit()
+                last_flush[0] = time.perf_counter()
+
+        def new_rows() -> None:
+            """Ajoute à l'index de recherche les lignes qui viennent d'arriver."""
+            rows = con.execute(
+                "SELECT id,name,folder,coalesce(body,'') FROM docs WHERE status='new'"
+            ).fetchall()
+            if not rows:
+                return
+            con.executemany(
+                "INSERT INTO fts(rowid,name,folder,body) VALUES(?,?,?,?)",
+                [(r[0], r[1], r[2] or "", r[3]) for r in rows],
+            )
+            con.execute("UPDATE docs SET status='ok' WHERE status='new'")
+            counters["added"] += len(rows)
+
+        def drop_docs(paths: list[str]) -> None:
+            for start in range(0, len(paths), 400):
+                chunk = paths[start:start + 400]
+                marks = ",".join("?" * len(chunk))
+                rows = con.execute(
+                    "SELECT id,name,folder,coalesce(body,'') FROM docs "
+                    f"WHERE path IN ({marks})", chunk,
+                ).fetchall()
+                if not rows:
+                    continue
                 con.executemany(
-                    "INSERT OR IGNORE INTO seen(path) VALUES(?)", [(b[0],) for b in batch]
+                    "INSERT INTO fts(fts,rowid,name,folder,body) "
+                    "VALUES('delete',?,?,?,?)",
+                    [(r[0], r[1], r[2] or "", r[3]) for r in rows],
                 )
+                con.execute(f"DELETE FROM docs WHERE path IN ({marks})", chunk)
+                counters["gone"] += len(rows)
+
+        def drop_subtree(folder: str) -> None:
+            """Retire un dossier supprimé : lui, tout ce qu'il contient, ses enfants."""
+            prefix = folder + os.sep
+            upper = prefix + "\uffff"
+            where = "(path=? OR (path>=? AND path<?))"
+
+            rows = con.execute(
+                "SELECT id,name,folder,coalesce(body,'') FROM docs WHERE " + where,
+                (folder, prefix, upper),
+            ).fetchall()
+            if rows:
+                con.executemany(
+                    "INSERT INTO fts(fts,rowid,name,folder,body) "
+                    "VALUES('delete',?,?,?,?)",
+                    [(r[0], r[1], r[2] or "", r[3]) for r in rows],
+                )
+                con.execute("DELETE FROM docs WHERE " + where, (folder, prefix, upper))
+                counters["gone"] += len(rows)
+            dirs = con.execute(
+                "SELECT id,name FROM folders WHERE " + where, (folder, prefix, upper)
+            ).fetchall()
+            if dirs:
+                con.executemany(
+                    "INSERT INTO fts_dirs(fts_dirs,rowid,name) VALUES('delete',?,?)",
+                    [(r[0], r[1]) for r in dirs],
+                )
+                con.execute("DELETE FROM folders WHERE " + where, (folder, prefix, upper))
+
+        def sync_dir(folder: str, depth: int, entries: list[tuple]) -> None:
+            files: list[tuple] = []
+            children: list[tuple] = []
+            for entry in entries:
+                if entry[0] == "d":
+                    children.append(entry)
+                    continue
+                _, path, name, size, mtime, _kind = entry
+                ext = os.path.splitext(name)[1].lower()
+                lower = name.lower()
+                if include and ext not in include:
+                    counters["ignored"] += 1
+                    continue
+                if ext in exclude_exts or lower.startswith("~$") or any(
+                    fnmatch.fnmatch(lower, pattern) for pattern in exclude_names
+                ):
+                    counters["ignored"] += 1
+                    continue
+                files.append((path, name, expand_name(name), ext, folder,
+                              size, mtime, scan_id))
+
+            if files:
                 con.executemany(
                     "INSERT INTO docs(path,name,body,ext,folder,size,mtime,scan_id,status) "
                     "VALUES(?,?,?,?,?,?,?,?, 'new') "
                     "ON CONFLICT(path) DO UPDATE SET size=excluded.size, "
                     "mtime=excluded.mtime, body=excluded.body "
                     "WHERE docs.size IS NOT excluded.size OR docs.mtime IS NOT excluded.mtime",
-                    batch,
+                    files,
                 )
-                new_rows = con.execute(
-                    "SELECT id,name,folder,coalesce(body,'') FROM docs WHERE status='new'"
+                counters["visited"] += len(files)
+                new_rows()
+
+            if children:
+                con.executemany(
+                    "INSERT INTO folders(path,name,depth,parent,scan_id,status) "
+                    "VALUES(?,?,?,?,?, 'new') "
+                    "ON CONFLICT(path) DO UPDATE SET parent=excluded.parent, "
+                    "depth=excluded.depth",
+                    [(child[1], child[2], depth + 1, folder, scan_id)
+                     for child in children],
+                )
+                rows = con.execute(
+                    "SELECT id,name FROM folders WHERE status='new'"
                 ).fetchall()
-                if new_rows:
-                    con.executemany(
-                        "INSERT INTO fts(rowid,name,folder,body) VALUES(?,?,?,?)",
-                        [(r[0], r[1], r[2] or "", r[3]) for r in new_rows],
-                    )
-                    con.execute("UPDATE docs SET status='ok' WHERE status='new'")
-                counters["added"] += len(new_rows)
-                counters["visited"] += len(batch)
-                batch.clear()
-            if folder_batch:
-                con.executemany(
-                    "INSERT OR IGNORE INTO seen_dir(path) VALUES(?)",
-                    [(b[0],) for b in folder_batch],
-                )
-                con.executemany(
-                    "INSERT INTO folders(path,name,depth,scan_id,status) VALUES(?,?,?,?, 'new') "
-                    "ON CONFLICT(path) DO NOTHING",
-                    folder_batch,
-                )
-                rows = con.execute("SELECT id,name FROM folders WHERE status='new'").fetchall()
                 if rows:
                     con.executemany(
-                        "INSERT INTO fts_dirs(rowid,name) VALUES(?,?)", rows
+                        "INSERT INTO fts_dirs(rowid,name) VALUES(?,?)",
+                        [(r[0], r[1]) for r in rows],
                     )
                     con.execute("UPDATE folders SET status='ok' WHERE status='new'")
-                folder_batch.clear()
-            con.commit()
-            last_flush[0] = time.perf_counter()
 
-        def on_tick(n: int) -> None:
-            counters["files"] += n
+            # Fichiers disparus de CE dossier. Le dossier vient d'être listé en
+            # entier : ce qui n'y est plus a bien été supprimé.
+            keep = {item[0] for item in files}
+            present = con.execute(
+                "SELECT path FROM docs WHERE folder=?", (folder,)
+            ).fetchall()
+            stale = [row[0] for row in present if row[0] not in keep]
+            if stale:
+                drop_docs(stale)
 
-        def on_dir() -> None:
-            counters["dirs"] += 1
+            keep_dirs = {child[1] for child in children}
+            stored_dirs = con.execute(
+                "SELECT path FROM folders WHERE parent=?", (folder,)
+            ).fetchall()
+            for (path,) in stored_dirs:
+                if path not in keep_dirs:
+                    drop_subtree(path)
 
-        def on_render(folder: str) -> None:
-            if folder:
-                current[0] = folder
+        def on_render(value: str) -> None:
+            if value:
+                current[0] = value
             emit()
 
         cancelled = False
         try:
-            for item in walk_paths(
-                roots, excluded, threads, on_tick, on_dir, on_render,
-                errors, skipped, cancel, failed_roots,
+            for folder, depth, ok, entries in walk_paths(
+                roots, excluded, threads,
+                lambda n: counters.__setitem__("files", counters["files"] + n),
+                lambda: counters.__setitem__("dirs", counters["dirs"] + 1),
+                on_render, errors, skipped, cancel, failed_roots,
             ):
-                if item[0] == "d":
-                    _, path, name, depth = item
-                    folder_batch.append((path, name, depth, scan_id))
-                else:
-                    _, path, name, size, mtime, kind = item
-                    ext = os.path.splitext(name)[1].lower()
-                    lower = name.lower()
-                    if include and ext not in include:
-                        counters["ignored"] += 1
-                        continue
-                    if ext in exclude_exts or lower.startswith("~$") or any(
-                        fnmatch.fnmatch(lower, pattern) for pattern in exclude_names
-                    ):
-                        counters["ignored"] += 1
-                        continue
-                    batch.append((path, name, expand_name(name), ext,
-                                  os.path.dirname(path), size, mtime, scan_id))
-                if len(batch) >= 8000:
-                    flush()
-                if time.perf_counter() - last_flush[0] > 20:
-                    flush()
+                if not ok:
+                    continue
+                sync_dir(folder, depth, entries)
+                commit_if_due()
+                emit()
         except Exception as exc:  # pragma: no cover - disque débranché, etc.
             errors.append(("", str(exc)))
         finally:
             cancelled = bool(cancel is not None and cancel.is_set())
-            flush(force=True)
+            con.commit()
 
-        gone = 0
-        # Ne jamais purger l'index quand un dossier demandé n'a pas pu être
-        # lu : partage déconnecté, droits retirés. Sinon le scan vide
-        # l'index au lieu de le mettre à jour.
-        purged = not cancelled and not failed_roots
-        if purged:
-            con.execute(
-                "INSERT INTO fts(fts,rowid,name,folder,body) "
-                "SELECT 'delete',id,name,folder,coalesce(body,'') FROM docs "
-                "WHERE path NOT IN (SELECT path FROM seen)"
-            )
-            gone = con.execute(
-                "SELECT count(*) FROM docs WHERE path NOT IN (SELECT path FROM seen)"
-            ).fetchone()[0]
-            con.execute("DELETE FROM docs WHERE path NOT IN (SELECT path FROM seen)")
-            con.execute(
-                "INSERT INTO fts_dirs(fts_dirs,rowid,name) SELECT 'delete',id,name "
-                "FROM folders WHERE path NOT IN (SELECT path FROM seen_dir)"
-            )
-            con.execute("DELETE FROM folders WHERE path NOT IN (SELECT path FROM seen_dir)")
-            con.commit()
+        # Le compactage de l'index coûte cher sur un gros partage : une fois par
+        # jour, ou après un vrai remue-ménage. Pas à chaque analyse.
+        files_total = con.execute("SELECT count(*) FROM docs").fetchone()[0]
+        meta = {k: v for k, v in con.execute("SELECT k,v FROM meta").fetchall()}
+        moved = counters["added"] + counters["gone"]
+        needs_optimize = not meta.get("last_optimize")
+        if not needs_optimize:
+            try:
+                age = (datetime.now()
+                       - datetime.fromisoformat(meta["last_optimize"])).total_seconds()
+                needs_optimize = age > 86400
+            except ValueError:
+                needs_optimize = True
+        if not needs_optimize and moved > max(5000, files_total // 20):
+            needs_optimize = True
+        if needs_optimize and not cancelled and files_total:
             con.execute("INSERT INTO fts(fts) VALUES('optimize')")
-            con.commit()
+            con.execute("INSERT INTO fts_dirs(fts_dirs) VALUES('optimize')")
             con.execute(
-                "INSERT OR REPLACE INTO meta(k,v) VALUES ('last_scan', ?)",
+                "INSERT OR REPLACE INTO meta(k,v) VALUES ('last_optimize', ?)",
                 (datetime.now().isoformat(timespec="seconds"),),
             )
-            con.execute(
-                "INSERT OR REPLACE INTO meta(k,v) VALUES ('last_scan_roots', ?)",
-                (json.dumps(roots, ensure_ascii=False),),
-            )
-            con.commit()
+
+        now = datetime.now().isoformat(timespec="seconds")
+        con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES ('last_attempt', ?)", (now,))
+        if not failed_roots and not cancelled:
+            con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES ('last_scan', ?)", (now,))
+        con.execute(
+            "INSERT OR REPLACE INTO meta(k,v) VALUES ('last_scan_roots', ?)",
+            (json.dumps(roots, ensure_ascii=False),),
+        )
+        con.commit()
 
         elapsed = time.perf_counter() - t0
         stats = self.stats()
@@ -464,8 +584,8 @@ class Catalog:
             "dirs": stats["dirs"],
             "added": counters["added"],
             "visited": counters["visited"],
-            "gone": gone,
-            "purged": purged,
+            "gone": counters["gone"],
+            "purged": not cancelled and not failed_roots,
             "failed_roots": failed_roots,
             "excluded": len(skipped),
             "ignored": counters["ignored"],
@@ -508,6 +628,8 @@ class Catalog:
             "size": size,
             "size_human": human_size(size),
             "last_scan": meta.get("last_scan"),
+            "last_attempt": meta.get("last_attempt"),
+            "last_optimize": meta.get("last_optimize"),
             "roots": roots,
             "db_size": db_bytes,
         }
