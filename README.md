@@ -91,6 +91,13 @@ Après des changements sur le partage, rien à relancer : la mise à jour
 automatique repasse en arrière-plan. **Analyser maintenant** force la mise à
 jour immédiate, et **Arrêter** l'interrompt sans rien perdre.
 
+La mise à jour est **incrémentale** : elle relève la date de chaque dossier
+déjà connu et ne relit que ceux qui ont changé (ajout, suppression,
+renommage). Sur 100 000 fichiers, une mise à jour sans changement passe
+d'environ 8 s à 0,6 s. Une **vérification complète** — qui reparcourt tout le
+partage — tourne une fois par jour, et reste accessible à la main dans les
+options avancées (**Vérifier tout maintenant**).
+
 ## Où sont les données
 
 Tout reste dans **un seul dossier**, `data`, à côté de l'exécutable :
