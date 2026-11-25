@@ -34,7 +34,9 @@ const S = {
   lastPush: 0,
   scanning: false,
   pollTimer: null,
-  cfg: { roots: [], exclude_dirs: [], exclude_exts: [], exclude_names: [], threads: 8 },
+  pollBusy: false,
+  nextRun: null,
+  cfg: { roots: [], exclude_dirs: [], exclude_exts: [], exclude_names: [], threads: 24, auto_scan: true, scan_interval_min: 30 },
 };
 
 function esc(value) {
@@ -103,6 +105,8 @@ async function init() {
   renderScope();
   renderMore();
   updateHistoryButtons();
+  pollScan();
+  S.pollTimer = setInterval(pollScan, 1500);
 
   if (!S.boot.stats.files) {
     nav("index");
@@ -248,8 +252,18 @@ function wire() {
     renderIndex();
   });
   $("#threads").addEventListener("change", () => {
-    S.cfg.threads = Math.max(1, Math.min(32, Number($("#threads").value) || 8));
+    S.cfg.threads = Math.max(1, Math.min(64, Number($("#threads").value) || 24));
     persistConfig();
+  });
+  $("#autoScan").addEventListener("change", () => {
+    S.cfg.auto_scan = $("#autoScan").checked;
+    persistConfig();
+    renderAuto();
+  });
+  $("#scanInterval").addEventListener("change", () => {
+    S.cfg.scan_interval_min = Number($("#scanInterval").value) || 30;
+    persistConfig();
+    renderAuto();
   });
   $("#excludes").addEventListener("change", () => {
     S.cfg.exclude_dirs = $("#excludes").value.split(",").map((s) => s.trim()).filter(Boolean);
@@ -889,7 +903,33 @@ function renderIndex() {
                    : `${fmtInt(count)} dossiers prêts. L'analyse ne modifie rien.`)
     : "Ajoutez d'abord un dossier à l'étape 1.";
   updateAdvancedSummary();
+  renderAuto();
   renderDataAlert();
+}
+
+function renderAuto() {
+  const on = S.cfg.auto_scan !== false;
+  const mins = Number(S.cfg.scan_interval_min) || 30;
+  const label = mins >= 60 ? `${Math.round(mins / 60 * 10) / 10} h` : `${mins} min`;
+  $("#autoScan").checked = on;
+  $("#scanInterval").disabled = !on;
+  const hint = $("#autoHint");
+  hint.classList.toggle("off", !on);
+  if (!on) {
+    hint.textContent = "Désactivée : l'index ne se met à jour que sur « Analyser maintenant ».";
+    return;
+  }
+  if (!S.cfg.roots.length) {
+    hint.textContent = "Ajoutez un dossier : la mise à jour démarrera toute seule.";
+    return;
+  }
+  const iso = S.nextRun || S.boot?.next_run;
+  const next = iso ? new Date(iso) : null;
+  const soon = !next || Number.isNaN(next.getTime())
+    || next.getTime() - Date.now() < 60000;
+  const heure = soon ? "dès que possible"
+    : "prochaine à " + next.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  hint.textContent = `Toutes les ${label}, en arrière-plan · ${heure}.`;
 }
 
 function updateAdvancedSummary() {
@@ -927,10 +967,12 @@ function renderRoots() {
 }
 
 function fillSettings() {
-  $("#threads").value = S.cfg.threads || 8;
+  $("#threads").value = S.cfg.threads || 24;
   $("#excludes").value = (S.cfg.exclude_dirs || []).join(", ");
   $("#excludeExts").value = (S.cfg.exclude_exts || []).join(", ");
   $("#excludeNames").value = (S.cfg.exclude_names || []).join(", ");
+  $("#autoScan").checked = S.cfg.auto_scan !== false;
+  $("#scanInterval").value = String(S.cfg.scan_interval_min || 30);
 }
 
 async function addRoot() {
@@ -953,6 +995,8 @@ async function persistConfig() {
       exclude_exts: S.cfg.exclude_exts,
       exclude_names: S.cfg.exclude_names,
       threads: S.cfg.threads,
+      auto_scan: S.cfg.auto_scan !== false,
+      scan_interval_min: S.cfg.scan_interval_min || 30,
     });
   } catch (err) {
     toast("Réglages non enregistrés : " + err.message, true);
@@ -976,11 +1020,33 @@ async function startScan() {
   $("#btnScan").disabled = true;
   $("#scanCurrent").textContent = "Préparation…";
   pollScan();
-  S.pollTimer = setInterval(pollScan, 500);
 }
 
 async function pollScan() {
-  const st = await Bridge.call("scan_status");
+  if (S.pollBusy) return;
+  S.pollBusy = true;
+  let st;
+  try {
+    st = await Bridge.call("scan_status");
+  } catch (err) {
+    S.pollBusy = false;
+    return;
+  }
+  S.pollBusy = false;
+  if (st.next_run !== undefined) S.nextRun = st.next_run;
+
+  // Analyse lancée en arrière-plan (mise à jour automatique) : on l'affiche
+  // comme si l'utilisateur l'avait demandée.
+  if (st.running && !S.scanning) {
+    S.scanning = true;
+    $("#scanIdle").hidden = true;
+    $("#scanDone").hidden = true;
+    $("#scanRun").hidden = false;
+    $("#btnScan").disabled = true;
+    $("#scanCurrent").textContent = st.auto ? "Mise à jour automatique…" : "Préparation…";
+    renderAuto();
+  }
+
   $("#scanFiles").textContent = fmtInt(st.files);
   $("#scanDirs").textContent = fmtInt(st.dirs);
   $("#scanTime").textContent = `${Math.round(st.elapsed)} s`;
@@ -990,7 +1056,6 @@ async function pollScan() {
   }
   if (!st.running && S.scanning) {
     S.scanning = false;
-    clearInterval(S.pollTimer);
     $("#btnScan").disabled = false;
     $("#scanRun").hidden = true;
     $("#scanDone").hidden = false;

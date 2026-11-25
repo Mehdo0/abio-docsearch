@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import threading
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import preview
@@ -50,8 +51,14 @@ class Api:
             "elapsed": 0,
             "result": None,
             "error": None,
+            "auto": False,
+            "next_run": None,
         }
         self._cancel = threading.Event()
+        self._auto_retry_at: datetime | None = None
+        self._sched_stop = threading.Event()
+        threading.Thread(target=self._schedule_loop, daemon=True,
+                         name="auto-scan").start()
 
     def attach(self, window) -> None:
         self._window = window
@@ -66,6 +73,7 @@ class Api:
                      "last_scan": None, "roots": [], "db_size": 0}
             stats_error = str(exc)
         recent = self.catalog.recent(limit=6) if stats.get("files") else []
+        due = self._next_run_at()
         return {
             "version": VERSION,
             "app": APP_NAME,
@@ -79,6 +87,7 @@ class Api:
             "data_dir": str(data_dir()),
             "cache_size": preview.cache_size(),
             "folders": _default_folders(),
+            "next_run": due.isoformat(timespec="seconds") if due else None,
         }
 
     # -- recherche ----------------------------------------------------------
@@ -213,6 +222,9 @@ class Api:
         return [str(Path(p)) for p in result]
 
     def start_scan(self, roots: list[str]) -> dict:
+        return self._start_scan(roots, auto=False)
+
+    def _start_scan(self, roots: list[str], auto: bool = False) -> dict:
         with self._scan_lock:
             if self._scan["running"]:
                 return {"ok": False, "error": "Un scan est déjà en cours"}
@@ -228,12 +240,64 @@ class Api:
                 "added": 0, "visited": 0, "errors": 0, "excluded": 0,
                 "ignored": 0,
                 "current": "", "elapsed": 0, "result": None, "error": None,
+                "auto": auto, "next_run": None,
             }
         self.config["roots"] = roots
         save_config(self.config)
         threading.Thread(target=self._scan_worker, args=(roots,), daemon=True,
                          name="scan").start()
-        return {"ok": True}
+        return {"ok": True, "auto": auto}
+
+    # -- mise à jour automatique ---------------------------------------------
+    def _next_run_at(self) -> datetime | None:
+        """Heure de la prochaine analyse automatique, ou None si désactivée."""
+        if not self.config.get("auto_scan", True):
+            return None
+        if not (self.config.get("roots") or []):
+            return None
+        if self._auto_retry_at is not None:
+            return self._auto_retry_at
+        try:
+            interval = int(self.config.get("scan_interval_min") or 30) * 60
+        except (TypeError, ValueError):
+            interval = 1800
+        try:
+            last = self.catalog.stats().get("last_attempt")
+        except Exception:
+            last = None
+        if not last:
+            return datetime.now()
+        try:
+            return datetime.fromisoformat(last) + timedelta(seconds=interval)
+        except ValueError:
+            return datetime.now()
+
+    def _schedule_loop(self) -> None:
+        # Laisse la fenêtre s'afficher avant de lancer quoi que ce soit.
+        self._sched_stop.wait(15)
+        while not self._sched_stop.is_set():
+            try:
+                self._auto_tick()
+            except Exception:
+                pass
+            self._sched_stop.wait(15)
+
+    def _auto_tick(self) -> None:
+        with self._scan_lock:
+            running = self._scan["running"]
+        due = self._next_run_at()
+        with self._scan_lock:
+            self._scan["next_run"] = due.isoformat(timespec="seconds") if due else None
+        if running or due is None or datetime.now() < due:
+            return
+        if self._auto_retry_at is not None:
+            self._auto_retry_at = None
+        started = self._start_scan(self.config.get("roots") or [], auto=True)
+        if not started.get("ok"):
+            # Partage débranché : on ne réessaie pas toutes les 15 secondes.
+            self._auto_retry_at = datetime.now() + timedelta(minutes=10)
+            with self._scan_lock:
+                self._scan["next_run"] = self._auto_retry_at.isoformat(timespec="seconds")
 
     def _scan_worker(self, roots: list[str]) -> None:
         def progress(state: dict) -> None:
@@ -261,6 +325,13 @@ class Api:
                 self._scan.update({
                     "running": False, "phase": "error", "error": str(exc),
                 })
+        finally:
+            self._auto_retry_at = None
+            due = self._next_run_at()
+            with self._scan_lock:
+                self._scan["next_run"] = (
+                    due.isoformat(timespec="seconds") if due else None
+                )
 
     def scan_status(self) -> dict:
         with self._scan_lock:
@@ -284,11 +355,12 @@ class Api:
 
     def save_config(self, patch: dict) -> dict:
         allowed = {"roots", "exclude_dirs", "include_exts", "exclude_exts",
-                   "exclude_names", "threads"}
+                   "exclude_names", "threads", "auto_scan", "scan_interval_min"}
         for key, value in (patch or {}).items():
             if key in allowed:
                 self.config[key] = value
         save_config(self.config)
+        self.config = load_config()
         return self.config
 
     def cache_info(self) -> dict:

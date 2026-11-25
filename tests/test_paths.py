@@ -145,3 +145,25 @@ def test_pointeur_vers_le_dossier_parent_est_corrige(deplace):
     assert paths.data_dir() == deplace["portable"]
     assert paths.pointer_file().read_text(encoding="utf-8") == str(deplace["portable"])
     assert paths.data_info()["source"] == paths.SOURCE_POINTER
+
+
+def test_reglages_de_mise_a_jour_automatique(tmp_path, monkeypatch):
+    monkeypatch.setenv("DOCSEARCH_DATA", str(tmp_path / "data"))
+    fichier = tmp_path / "data" / "config.json"
+    fichier.parent.mkdir(parents=True, exist_ok=True)
+
+    fichier.write_text(json.dumps({"auto_scan": False, "scan_interval_min": 1}), encoding="utf-8")
+    cfg = paths.load_config()
+    assert cfg["auto_scan"] is False
+    assert cfg["scan_interval_min"] == 5, "un intervalle trop court est ramené au minimum"
+
+    fichier.write_text(json.dumps({"scan_interval_min": 100000}), encoding="utf-8")
+    assert paths.load_config()["scan_interval_min"] == 1440
+
+    fichier.write_text(json.dumps({"threads": 500}), encoding="utf-8")
+    assert paths.load_config()["threads"] == 64
+
+    fichier.write_text("{}", encoding="utf-8")
+    cfg = paths.load_config()
+    assert cfg["auto_scan"] is True
+    assert cfg["scan_interval_min"] == 30

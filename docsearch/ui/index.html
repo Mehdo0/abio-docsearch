@@ -197,13 +197,31 @@
           <span class="step-num">2</span>
           <div>
             <h2>Lancez l'analyse</h2>
-            <p>L'application parcourt les dossiers choisis et note les noms des documents. Cela prend quelques secondes, quelques minutes sur un gros partage.</p>
+            <p>L'application parcourt les dossiers choisis et note les noms des documents. Cela prend quelques secondes, quelques minutes sur un gros partage. Ensuite, elle se met à jour toute seule en arrière-plan : vous n'avez rien à relancer.</p>
           </div>
         </div>
         <button class="btn primary big" id="btnScan">
           <svg><use href="#i-scan"/></svg>
           <span>Analyser maintenant</span>
         </button>
+
+        <div class="auto-row">
+          <label class="switch" title="Mise à jour automatique">
+            <input type="checkbox" id="autoScan" checked>
+            <span class="switch-track"></span>
+          </label>
+          <div class="auto-text">
+            <strong>Mise à jour automatique</strong>
+            <p id="autoHint">L'index se rafraîchit tout seul en arrière-plan.</p>
+          </div>
+          <select id="scanInterval" class="auto-select" title="Fréquence">
+            <option value="15">15 min</option>
+            <option value="30">30 min</option>
+            <option value="60">1 h</option>
+            <option value="120">2 h</option>
+            <option value="360">6 h</option>
+          </select>
+        </div>
 
         <div id="scanIdle" class="scan-idle">
           <p id="scanHint">Ajoutez d'abord un dossier à l'étape 1.</p>
@@ -269,7 +287,7 @@
         <section class="adv-block two">
           <label class="field">
             <span>Fils de lecture</span>
-            <input id="threads" type="number" min="1" max="32" value="8">
+            <input id="threads" type="number" min="1" max="64" value="24">
           </label>
           <label class="field">
             <span>Dossiers exclus (séparés par des virgules)</span>
@@ -324,7 +342,7 @@
       </div>
     </div>
     <div class="help-grid">
-      <article class="help-card"><span class="help-num">01</span><h3>Analyser le partage</h3><p>Onglet <strong>Index</strong>, « Ajouter un dossier », choisissez le lecteur réseau, puis « Analyser maintenant ». À refaire quand les fichiers changent.</p></article>
+      <article class="help-card"><span class="help-num">01</span><h3>Analyser le partage</h3><p>Onglet <strong>Index</strong>, « Ajouter un dossier », choisissez le lecteur réseau. L'index se met ensuite à jour tout seul ; « Analyser maintenant » force la mise à jour.</p></article>
       <article class="help-card"><span class="help-num">02</span><h3>Chercher</h3><p>Tape un nom, un dossier ou quelques mots. Les accents et les majuscules n'ont pas d'importance. Filtre par type avec les pastilles.</p></article>
       <article class="help-card"><span class="help-num">03</span><h3>Prévisualiser</h3><p>Survolez un résultat : la première page s'affiche à droite. Double-clic ou <kbd>Entrée</kbd> ouvre le document dans Office ou le lecteur PDF.</p></article>
     </div>
