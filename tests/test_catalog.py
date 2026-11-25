@@ -312,3 +312,127 @@ def test_compactage_pas_a_chaque_analyse(tmp_path: Path) -> None:
 
     catalog.scan([str(share)], CONFIG)
     assert catalog.stats()["last_optimize"] == premier
+
+
+def test_revision_rapide_ne_relit_rien_si_personne_n_a_bouge(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    premier = catalog.scan([str(share)], CONFIG)
+    assert premier["mode"] == "complete"
+
+    second = catalog.scan([str(share)], CONFIG)
+    assert second["mode"] == "rapide"
+    assert second["listed"] == 0, "aucun dossier ne doit être relu"
+    assert second["unchanged"] == 6, "1 racine + 5 dossiers sont seulement datés"
+    assert second["visited"] == 0
+    assert second["files"] == 3
+
+
+def test_revision_rapide_voit_un_fichier_ajoute_au_fond(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    (share / "Qualite" / "CRS" / "Nouveau_abioSCOPE.docx").write_bytes(b"PK\x03\x04")
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["mode"] == "rapide"
+    assert second["listed"] == 1, "seul le dossier modifié est relu"
+    assert second["added"] == 1
+    assert [f["name"] for f in catalog.search("abioSCOPE")["files"]] == ["Nouveau_abioSCOPE.docx"]
+
+
+def test_revision_rapide_voit_un_dossier_supprime_au_fond(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    import shutil
+    shutil.rmtree(share / "Qualite" / "PRS")
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["mode"] == "rapide"
+    assert second["files"] == 2
+    assert catalog.search("validation")["files"] == []
+
+
+def test_revision_rapide_suit_un_renommage_de_dossier(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    (share / "Qualite" / "CRS").rename(share / "Qualite" / "CRS_2026")
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["mode"] == "rapide"
+    assert second["files"] == 3
+    assert second["gone"] == 1
+    resultat = catalog.search("definitif")["files"]
+    assert len(resultat) == 1 and "CRS_2026" in resultat[0]["path"]
+
+
+def test_analyse_complete_forcee_reverifie_tout(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    force = catalog.scan([str(share)], CONFIG, full=True)
+    assert force["mode"] == "complete"
+    assert force["listed"] == 6
+    assert force["visited"] == 3
+
+
+def test_racine_disparue_ne_vide_pas_l_index(tmp_path: Path) -> None:
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+
+    import shutil
+    shutil.move(str(share), str(tmp_path / "share-absent"))
+    second = catalog.scan([str(share)], CONFIG)
+
+    assert second["files"] == 3, "une racine absente n'est pas une suppression"
+    assert second["failed_roots"] == [str(share)]
+    assert second["purged"] is False
+
+
+def test_base_en_schema_3_2_migre_et_repart_en_complet(tmp_path: Path) -> None:
+    """Une base de la 3.4.0 (sans dates de dossier) doit migrer sans perte."""
+    import sqlite3
+    share = tmp_path / "share"
+    share.mkdir()
+    (share / "CR_abioCALIB.pdf").write_bytes(b"x")
+    db = tmp_path / "index.db"
+    con = sqlite3.connect(db)
+    con.executescript("""
+        CREATE TABLE docs (
+            id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+            body TEXT, ext TEXT, folder TEXT, size INTEGER, mtime REAL,
+            status TEXT DEFAULT 'new', scan_id INTEGER);
+        CREATE VIRTUAL TABLE fts USING fts5(name, folder, body, content='docs', content_rowid='id');
+        CREATE TABLE folders (
+            id INTEGER PRIMARY KEY, path TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
+            depth INTEGER, parent TEXT, status TEXT DEFAULT 'new', scan_id INTEGER);
+        CREATE VIRTUAL TABLE fts_dirs USING fts5(name, content='folders', content_rowid='id');
+        CREATE TABLE meta (k TEXT PRIMARY KEY, v TEXT);
+        INSERT INTO meta VALUES ('schema_version', '3.2');
+    """)
+    con.commit()
+    con.close()
+
+    catalog = Catalog(db)
+    premier = catalog.scan([str(share)], CONFIG)
+    assert premier["mode"] == "complete"
+    assert premier["files"] == 1
+    con = catalog.con()
+    colonnes = {r[1] for r in con.execute("PRAGMA table_info(folders)")}
+    assert {"mtime_ns", "verified"} <= colonnes
+    assert con.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone()[0] == "3.3"
+    # et le passage suivant est bien rapide
+    assert catalog.scan([str(share)], CONFIG)["mode"] == "rapide"

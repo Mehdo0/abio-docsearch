@@ -23,7 +23,7 @@ from typing import Callable, Iterable
 from .paths import as_list, human_size
 from .winpath import display_path, io_path
 
-SCHEMA_VERSION = "3.2"
+SCHEMA_VERSION = "3.3"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS docs (
@@ -49,8 +49,16 @@ CREATE TABLE IF NOT EXISTS folders (
     name    TEXT NOT NULL,
     depth   INTEGER,
     parent  TEXT,
+    mtime_ns INTEGER,
+    verified INTEGER DEFAULT 0,
     status  TEXT DEFAULT 'new',
     scan_id INTEGER
+);
+CREATE TABLE IF NOT EXISTS roots (
+    path    TEXT PRIMARY KEY,
+    mtime_ns INTEGER,
+    verified INTEGER DEFAULT 0,
+    scanned_at TEXT
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_dirs USING fts5(
     name, content='folders', content_rowid='id',
@@ -151,9 +159,14 @@ def _migrate(con: sqlite3.Connection) -> None:
 
     # v3.2 : réconciliation par dossier. Le parent est stocké pour pouvoir
     # comparer les sous-dossiers d'un dossier sans balayer toute la base.
+    # v3.3 : date de chaque dossier, pour ne relire que ceux qui ont bougé.
     columns = {r[1] for r in con.execute("PRAGMA table_info(folders)")}
     if "parent" not in columns:
         con.execute("ALTER TABLE folders ADD COLUMN parent TEXT")
+    if "mtime_ns" not in columns:
+        con.execute("ALTER TABLE folders ADD COLUMN mtime_ns INTEGER")
+    if "verified" not in columns:
+        con.execute("ALTER TABLE folders ADD COLUMN verified INTEGER DEFAULT 0")
     orphans = con.execute(
         "SELECT id, path FROM folders WHERE parent IS NULL"
     ).fetchall()
@@ -167,6 +180,165 @@ def _migrate(con: sqlite3.Connection) -> None:
     con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES('schema_version',?)",
                 (SCHEMA_VERSION,))
     con.commit()
+
+
+def walk_quick(
+    roots: Iterable[str],
+    known: dict[str, tuple[int | None, int]],
+    children: dict[str, list[str]],
+    excluded_names: set[str],
+    threads: int,
+    on_tick: Callable[[int], None],
+    on_dir: Callable[[], None],
+    on_stat: Callable[[], None],
+    on_render: Callable[[str], None],
+    errors: list,
+    skipped: list,
+    cancel: threading.Event | None = None,
+    failed_roots: list | None = None,
+) -> Iterable[tuple[str, int, str, list[tuple], int | None]]:
+    """Révision rapide : un stat par dossier connu, relecture des seuls modifiés.
+
+    La date d'un dossier ne change que si l'on y ajoute, retire ou renomme une
+    entrée. Un dossier inchangé est donc sauté — mais ses sous-dossiers connus
+    sont visités quand même : une modification profonde ne change pas la date
+    du parent. Rien ne peut donc passer entre les mailles.
+
+    Statuts rendus : ``ok`` (relu), ``same`` (date identique, non relu),
+    ``gone`` (disparu), ``error`` (illisible : on ne supprime rien).
+    """
+    out: queue.Queue = queue.Queue(maxsize=4000)
+    work: queue.Queue = queue.Queue()
+    seen: set[str] = set()
+    lock = threading.Lock()
+    active = [0]
+    stop = threading.Event()
+
+    def finish() -> None:
+        with lock:
+            active[0] -= 1
+
+    def worker() -> None:
+        while not stop.is_set():
+            try:
+                folder, depth = work.get(timeout=0.4)
+            except queue.Empty:
+                with lock:
+                    if active[0] == 0:
+                        return
+                continue
+            on_stat()
+            try:
+                mtime_ns = os.stat(io_path(folder)).st_mtime_ns
+            except FileNotFoundError:
+                if depth == 0:
+                    # La racine a disparu : lecteur non monté, pas suppression.
+                    errors.append((folder, "introuvable"))
+                    if failed_roots is not None:
+                        failed_roots.append(folder)
+                    out.put((folder, depth, "error", [], None))
+                else:
+                    out.put((folder, depth, "gone", [], None))
+                finish()
+                continue
+            except OSError as exc:
+                errors.append((folder, str(exc)))
+                if depth == 0 and failed_roots is not None:
+                    failed_roots.append(folder)
+                out.put((folder, depth, "error", [], None))
+                finish()
+                continue
+
+            known_mtime, verified = known.get(folder, (None, False))
+            if verified and known_mtime == mtime_ns:
+                for child in children.get(folder, ()):
+                    with lock:
+                        key = child.lower()
+                        if key in seen or depth > 60:
+                            continue
+                        seen.add(key)
+                        active[0] += 1
+                    work.put((child, depth + 1))
+                out.put((folder, depth, "same", [], mtime_ns))
+                finish()
+                continue
+
+            items: list[tuple] = []
+            ok = True
+            try:
+                with os.scandir(io_path(folder)) as it:
+                    for entry in it:
+                        if cancel is not None and cancel.is_set():
+                            ok = False
+                            break
+                        child = display_path(os.path.join(folder, entry.name))
+                        try:
+                            is_dir = entry.is_dir(follow_symlinks=False)
+                        except OSError:
+                            is_dir = False
+                        if is_dir:
+                            if entry.name.startswith(".") or norm(entry.name) in excluded_names:
+                                skipped.append(1)
+                                continue
+                            with lock:
+                                key = child.lower()
+                                if key in seen or depth > 60:
+                                    continue
+                                seen.add(key)
+                                active[0] += 1
+                            on_dir()
+                            try:
+                                child_mtime = entry.stat(follow_symlinks=False).st_mtime_ns
+                            except OSError:
+                                child_mtime = None
+                            items.append(("d", child, entry.name, child_mtime))
+                            work.put((child, depth + 1))
+                        else:
+                            on_tick(1)
+                            try:
+                                st = entry.stat(follow_symlinks=False)
+                                size, mtime = st.st_size, st.st_mtime
+                                attrs = getattr(st, "st_file_attributes", 0)
+                                kind = "link" if attrs & 0x400 else "file"
+                            except OSError:
+                                size, mtime, kind = 0, 0, "file"
+                            items.append(("f", child, entry.name, size, mtime, kind))
+            except PermissionError:
+                ok = False
+                errors.append((folder, "acces refuse"))
+            except OSError as exc:
+                ok = False
+                errors.append((folder, str(exc)))
+            if not ok and depth == 0 and failed_roots is not None:
+                failed_roots.append(folder)
+            out.put((folder, depth, "ok" if ok else "error", items, mtime_ns))
+            on_render(folder)
+            finish()
+
+    for root in roots:
+        work.put((root, 0))
+        with lock:
+            active[0] += 1
+    on_render(next(iter(roots), ""))
+
+    workers = [threading.Thread(target=worker, daemon=True) for _ in range(max(1, threads))]
+    for w in workers:
+        w.start()
+
+    while True:
+        try:
+            item = out.get(timeout=0.5)
+        except queue.Empty:
+            if stop.is_set() or (cancel is not None and cancel.is_set()):
+                break
+            if not any(w.is_alive() for w in workers):
+                break
+            on_render("")
+            continue
+        yield item
+    stop.set()
+    for w in workers:
+        w.join(timeout=3)
 
 
 def build_query(raw: str) -> str | None:
@@ -218,7 +390,7 @@ def walk_paths(
     def worker() -> None:
         while not stop.is_set():
             try:
-                folder, depth = work.get(timeout=0.4)
+                folder, depth, mtime_ns = work.get(timeout=0.4)
             except queue.Empty:
                 with lock:
                     if active[0] == 0:
@@ -250,8 +422,12 @@ def walk_paths(
                                 seen_dirs.add(key)
                                 active[0] += 1
                             on_dir()
-                            items.append(("d", child, entry.name))
-                            work.put((child, depth + 1))
+                            try:
+                                child_mtime = entry.stat(follow_symlinks=False).st_mtime_ns
+                            except OSError:
+                                child_mtime = None
+                            items.append(("d", child, entry.name, child_mtime))
+                            work.put((child, depth + 1, child_mtime))
                         else:
                             on_tick(1)
                             try:
@@ -273,11 +449,15 @@ def walk_paths(
                     active[0] -= 1
             if not ok and depth == 0 and failed_roots is not None:
                 failed_roots.append(folder)
-            out.put((folder, depth, ok, items))
+            out.put((folder, depth, "ok" if ok else "error", items, mtime_ns))
             on_render(folder)
 
     for root in roots:
-        work.put((root, 0))
+        try:
+            root_mtime = os.stat(io_path(root)).st_mtime_ns
+        except OSError:
+            root_mtime = None
+        work.put((root, 0, root_mtime))
         with lock:
             active[0] += 1
     on_render(next(iter(roots), ""))
@@ -332,13 +512,14 @@ class Catalog:
         config: dict,
         progress: Callable[[dict], None] | None = None,
         cancel: threading.Event | None = None,
+        full: bool | None = None,
     ) -> dict:
-        """Parcourt les racines et met l'index à jour dossier par dossier.
+        """Met l'index à jour, en révision rapide ou complète.
 
-        Chaque dossier listé est comparé à ce que l'index connaît de lui : les
-        fichiers absents du disque sont retirés tout de suite. Un dossier
-        illisible n'est jamais réconcilié, donc une coupure réseau ne peut pas
-        vider l'index.
+        La révision rapide ne fait qu'un relevé de date par dossier connu et ne
+        relit que ceux qui ont bougé. La révision complète reparcourt tout ;
+        elle tourne au premier lancement, à la demande, et une fois par jour
+        (``deep_scan_hours``) comme filet de sécurité.
         """
         con = self.con()
         scan_id = int(time.time())
@@ -355,12 +536,53 @@ class Catalog:
         }
         exclude_names = [n.lower() for n in as_list(config.get("exclude_names"))]
 
+        meta0 = {k: v for k, v in con.execute("SELECT k,v FROM meta").fetchall()}
+        marks = ",".join("?" * len(roots)) or "''"
+        total_folders = con.execute("SELECT count(*) FROM folders").fetchone()[0]
+        verified_folders = con.execute(
+            "SELECT count(*) FROM folders WHERE verified=1"
+        ).fetchone()[0]
+        total_roots = con.execute(
+            f"SELECT count(*) FROM roots WHERE path IN ({marks})", roots
+        ).fetchone()[0]
+        verified_roots = con.execute(
+            f"SELECT count(*) FROM roots WHERE verified=1 AND path IN ({marks})", roots
+        ).fetchone()[0]
+        total_folders += total_roots
+        verified_folders += verified_roots
+        try:
+            deep_hours = max(1.0, min(168.0, float(config.get("deep_scan_hours") or 24)))
+        except (TypeError, ValueError):
+            deep_hours = 24.0
+        deep_due = True
+        if meta0.get("last_deep"):
+            try:
+                deep_due = (datetime.now() - datetime.fromisoformat(
+                    meta0["last_deep"])).total_seconds() > deep_hours * 3600
+            except ValueError:
+                deep_due = True
+
+        if full is True:
+            mode = "complete"
+        elif full is False:
+            mode = "rapide"
+        elif not total_folders or deep_due:
+            mode = "complete"
+        elif verified_folders < total_folders * 0.9:
+            # Index partiellement vérifié (mise à jour de version, dossier
+            # refusé) : on repart sur un parcours complet plutôt que de
+            # comparer des dates qu'on n'a pas.
+            mode = "complete"
+        else:
+            mode = "rapide"
+
         errors: list = []
         skipped: list = []
         failed_roots: list[str] = []
         t0 = time.perf_counter()
         counters = {"files": 0, "dirs": 0, "added": 0, "visited": 0,
-                    "ignored": 0, "gone": 0}
+                    "ignored": 0, "gone": 0, "listed": 0, "unchanged": 0,
+                    "stats": 0}
         last_emit = [0.0]
         last_flush = [time.perf_counter()]
         current = [""]
@@ -377,11 +599,14 @@ class Catalog:
                 "dirs": counters["dirs"],
                 "added": counters["added"],
                 "visited": counters["visited"],
+                "listed": counters["listed"],
+                "unchanged": counters["unchanged"],
                 "errors": len(errors),
                 "excluded": len(skipped),
                 "ignored": counters["ignored"],
                 "current": current[0],
                 "elapsed": round(now - t0, 1),
+                "mode": mode,
             })
 
         def commit_if_due(force: bool = False) -> None:
@@ -390,7 +615,6 @@ class Catalog:
                 last_flush[0] = time.perf_counter()
 
         def new_rows() -> None:
-            """Ajoute à l'index de recherche les lignes qui viennent d'arriver."""
             rows = con.execute(
                 "SELECT id,name,folder,coalesce(body,'') FROM docs WHERE status='new'"
             ).fetchall()
@@ -449,7 +673,42 @@ class Catalog:
                 )
                 con.execute("DELETE FROM folders WHERE " + where, (folder, prefix, upper))
 
-        def sync_dir(folder: str, depth: int, entries: list[tuple]) -> None:
+        def new_dirs() -> None:
+            """Indexe les dossiers découverts, quel que soit l'ordre d'arrivée."""
+            rows = con.execute(
+                "SELECT id,name FROM folders WHERE status='new'"
+            ).fetchall()
+            if rows:
+                con.executemany(
+                    "INSERT INTO fts_dirs(rowid,name) VALUES(?,?)",
+                    [(r[0], r[1]) for r in rows],
+                )
+                con.execute("UPDATE folders SET status='ok' WHERE status='new'")
+
+        def mark(folder: str, depth: int, verified: int, mtime_ns: int | None) -> None:
+            if depth == 0:
+                con.execute(
+                    "INSERT INTO roots(path,mtime_ns,verified,scanned_at) VALUES(?,?,?,?) "
+                    "ON CONFLICT(path) DO UPDATE SET mtime_ns=excluded.mtime_ns, "
+                    "verified=excluded.verified, scanned_at=excluded.scanned_at",
+                    (folder, mtime_ns, verified,
+                     datetime.now().isoformat(timespec="seconds")),
+                )
+                return
+            # Un dossier peut être relu avant que son parent ne soit enregistré
+            # (plusieurs fils) : on crée la ligne s'il en manque une.
+            con.execute(
+                "INSERT OR IGNORE INTO folders(path,name,depth,parent,status) "
+                "VALUES(?,?,?,?, 'new')",
+                (folder, os.path.basename(folder), depth, os.path.dirname(folder)),
+            )
+            con.execute(
+                "UPDATE folders SET mtime_ns=coalesce(?, mtime_ns), verified=? "
+                "WHERE path=?", (mtime_ns, verified, folder),
+            )
+
+        def sync_dir(folder: str, depth: int, entries: list[tuple],
+                     dir_mtime_ns: int | None) -> None:
             files: list[tuple] = []
             children: list[tuple] = []
             for entry in entries:
@@ -484,11 +743,12 @@ class Catalog:
 
             if children:
                 con.executemany(
-                    "INSERT INTO folders(path,name,depth,parent,scan_id,status) "
-                    "VALUES(?,?,?,?,?, 'new') "
+                    "INSERT INTO folders(path,name,depth,parent,mtime_ns,scan_id,status) "
+                    "VALUES(?,?,?,?,?,?, 'new') "
                     "ON CONFLICT(path) DO UPDATE SET parent=excluded.parent, "
                     "depth=excluded.depth",
-                    [(child[1], child[2], depth + 1, folder, scan_id)
+                    [(child[1], child[2], depth + 1, folder,
+                      child[3] if len(child) > 3 else None, scan_id)
                      for child in children],
                 )
                 rows = con.execute(
@@ -500,9 +760,6 @@ class Catalog:
                         [(r[0], r[1]) for r in rows],
                     )
                     con.execute("UPDATE folders SET status='ok' WHERE status='new'")
-
-            # Fichiers disparus de CE dossier. Le dossier vient d'être listé en
-            # entier : ce qui n'y est plus a bien été supprimé.
             keep = {item[0] for item in files}
             present = con.execute(
                 "SELECT path FROM docs WHERE folder=?", (folder,)
@@ -519,6 +776,20 @@ class Catalog:
                 if path not in keep_dirs:
                     drop_subtree(path)
 
+            mark(folder, depth, 1, dir_mtime_ns)
+
+        # Racines retirées de la configuration : on ne les garde pas en base.
+        configured = {str(root) for root in roots}
+        for (old_root,) in con.execute("SELECT path FROM roots").fetchall():
+            if old_root not in configured:
+                drop_subtree(old_root)
+                con.execute("DELETE FROM roots WHERE path=?", (old_root,))
+        con.commit()
+
+        on_tick = lambda n: counters.__setitem__("files", counters["files"] + n)
+        on_dir = lambda: counters.__setitem__("dirs", counters["dirs"] + 1)
+        on_stat = lambda: counters.__setitem__("stats", counters["stats"] + 1)
+
         def on_render(value: str) -> None:
             if value:
                 current[0] = value
@@ -526,25 +797,53 @@ class Catalog:
 
         cancelled = False
         try:
-            for folder, depth, ok, entries in walk_paths(
-                roots, excluded, threads,
-                lambda n: counters.__setitem__("files", counters["files"] + n),
-                lambda: counters.__setitem__("dirs", counters["dirs"] + 1),
-                on_render, errors, skipped, cancel, failed_roots,
-            ):
-                if not ok:
+            if mode == "rapide":
+                known: dict[str, tuple[int | None, int]] = {}
+                children_map: dict[str, list[str]] = {}
+                for path, parent, mtime_ns, verified in con.execute(
+                    "SELECT path, parent, mtime_ns, verified FROM folders"
+                ):
+                    known[path] = (mtime_ns, 1 if verified else 0)
+                    children_map.setdefault(parent or "", []).append(path)
+                for path, mtime_ns, verified in con.execute(
+                    "SELECT path, mtime_ns, verified FROM roots"
+                ):
+                    known[path] = (mtime_ns, 1 if verified else 0)
+                events = walk_quick(
+                    roots, known, children_map, excluded, threads,
+                    on_tick, on_dir, on_stat, on_render, errors, skipped,
+                    cancel, failed_roots,
+                )
+            else:
+                events = walk_paths(
+                    roots, excluded, threads, on_tick, on_dir, on_render,
+                    errors, skipped, cancel, failed_roots,
+                )
+
+            for folder, depth, status, entries, dir_mtime_ns in events:
+                if status == "same":
+                    counters["unchanged"] += 1
                     continue
-                sync_dir(folder, depth, entries)
+                if status == "gone":
+                    drop_subtree(folder)
+                    if depth == 0:
+                        con.execute("DELETE FROM roots WHERE path=?", (folder,))
+                    counters["unchanged"] += 0
+                    continue
+                if status != "ok":
+                    mark(folder, depth, 0, None)
+                    continue
+                counters["listed"] += 1
+                sync_dir(folder, depth, entries, dir_mtime_ns)
                 commit_if_due()
                 emit()
         except Exception as exc:  # pragma: no cover - disque débranché, etc.
             errors.append(("", str(exc)))
         finally:
             cancelled = bool(cancel is not None and cancel.is_set())
+            new_dirs()
             con.commit()
 
-        # Le compactage de l'index coûte cher sur un gros partage : une fois par
-        # jour, ou après un vrai remue-ménage. Pas à chaque analyse.
         files_total = con.execute("SELECT count(*) FROM docs").fetchone()[0]
         meta = {k: v for k, v in con.execute("SELECT k,v FROM meta").fetchall()}
         moved = counters["added"] + counters["gone"]
@@ -570,6 +869,9 @@ class Catalog:
         con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES ('last_attempt', ?)", (now,))
         if not failed_roots and not cancelled:
             con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES ('last_scan', ?)", (now,))
+            if mode == "complete":
+                con.execute("INSERT OR REPLACE INTO meta(k,v) VALUES ('last_deep', ?)",
+                            (now,))
         con.execute(
             "INSERT OR REPLACE INTO meta(k,v) VALUES ('last_scan_roots', ?)",
             (json.dumps(roots, ensure_ascii=False),),
@@ -580,10 +882,14 @@ class Catalog:
         stats = self.stats()
         result = {
             "cancelled": cancelled,
+            "mode": mode,
             "files": stats["files"],
             "dirs": stats["dirs"],
             "added": counters["added"],
             "visited": counters["visited"],
+            "listed": counters["listed"],
+            "unchanged": counters["unchanged"],
+            "stats": counters["stats"],
             "gone": counters["gone"],
             "purged": not cancelled and not failed_roots,
             "failed_roots": failed_roots,
