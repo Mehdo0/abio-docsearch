@@ -12,7 +12,13 @@ une recherche instantanée.
 
 - **Indexe les noms** de fichiers et de dossiers d'un ou plusieurs partages
   (lecteur réseau, dossier local). Aucun document n'est ouvert pendant le
-  scan : 200 000 fichiers prennent une quinzaine de secondes.
+  scan : quelques secondes en local, une à deux minutes pour 200 000 fichiers
+  sur un partage réseau, une dizaine de minutes pour un million.
+- **Se met à jour tout seul** en arrière-plan (toutes les 30 min par défaut,
+  de 15 min à 6 h). Chaque dossier est comparé à ce que l'index connaît de
+  lui : un fichier ajouté, renommé ou supprimé apparaît au passage suivant,
+  sans relancer quoi que ce soit. Un dossier refusé ou un partage coupé n'est
+  jamais réconcilié : rien ne disparaît de l'index.
 - **Ignore par défaut** les archives (zip, rar, 7z…), les exécutables, les
   fichiers système et temporaires, et les fichiers de verrouillage Office
   (`~$…`). La liste est visible et modifiable dans les options avancées.
@@ -59,7 +65,8 @@ La ligne de commande est fournie à part, dans
 ## Utiliser
 
 1. Onglet **Index** → **Ajouter un dossier** → choisir le lecteur réseau
-   (`T:\`, `\\srv-file\abioSERVER\...`) → **Analyser maintenant**.
+   (`T:\`, `\\srv-file\abioSERVER\...`) → **Analyser maintenant**. La première
+   analyse se lance toute seule dès qu'un dossier est ajouté.
 2. Onglet **Rechercher** → taper un nom, un dossier ou quelques mots.
 3. Survoler un résultat pour voir la première page, double-cliquer pour ouvrir.
 
@@ -80,8 +87,9 @@ Raccourcis : `Ctrl+K` recherche, `↑`/`↓` naviguer, `Entrée` ouvrir,
 précédente/suivante, `Ctrl+C` copier le chemin, `Échap` retirer le dossier
 puis effacer.
 
-Relancer l'analyse après des changements est rapide : le scan est incrémental
-et ne relit que les noms.
+Après des changements sur le partage, rien à relancer : la mise à jour
+automatique repasse en arrière-plan. **Analyser maintenant** force la mise à
+jour immédiate, et **Arrêter** l'interrompt sans rien perdre.
 
 ## Où sont les données
 
