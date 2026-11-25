@@ -287,11 +287,7 @@ def walk_quick(
                                 seen.add(key)
                                 active[0] += 1
                             on_dir()
-                            try:
-                                child_mtime = entry.stat(follow_symlinks=False).st_mtime_ns
-                            except OSError:
-                                child_mtime = None
-                            items.append(("d", child, entry.name, child_mtime))
+                            items.append(("d", child, entry.name))
                             work.put((child, depth + 1))
                         else:
                             on_tick(1)
@@ -369,7 +365,7 @@ def walk_paths(
     skipped: list,
     cancel: threading.Event | None = None,
     failed_roots: list | None = None,
-) -> Iterable[tuple[str, int, bool, list[tuple]]]:
+) -> Iterable[tuple[str, int, str, list[tuple], int | None]]:
     """Rend un lot par dossier : (dossier, profondeur, lisible, entrées).
 
     Les entrées d'un dossier arrivent groupées : c'est ce qui permet de
@@ -390,12 +386,19 @@ def walk_paths(
     def worker() -> None:
         while not stop.is_set():
             try:
-                folder, depth, mtime_ns = work.get(timeout=0.4)
+                folder, depth = work.get(timeout=0.4)
             except queue.Empty:
                 with lock:
                     if active[0] == 0:
                         return
                 continue
+            # La date est relevée par os.stat, jamais reprise de l'énumération
+            # du parent : sur SMB, les deux sources ne rendent pas exactement
+            # la même valeur et le dossier serait relu à chaque passage.
+            try:
+                mtime_ns = os.stat(io_path(folder)).st_mtime_ns
+            except OSError:
+                mtime_ns = None
             items: list[tuple] = []
             ok = True
             try:
@@ -422,12 +425,8 @@ def walk_paths(
                                 seen_dirs.add(key)
                                 active[0] += 1
                             on_dir()
-                            try:
-                                child_mtime = entry.stat(follow_symlinks=False).st_mtime_ns
-                            except OSError:
-                                child_mtime = None
-                            items.append(("d", child, entry.name, child_mtime))
-                            work.put((child, depth + 1, child_mtime))
+                            items.append(("d", child, entry.name))
+                            work.put((child, depth + 1))
                         else:
                             on_tick(1)
                             try:
@@ -453,11 +452,7 @@ def walk_paths(
             on_render(folder)
 
     for root in roots:
-        try:
-            root_mtime = os.stat(io_path(root)).st_mtime_ns
-        except OSError:
-            root_mtime = None
-        work.put((root, 0, root_mtime))
+        work.put((root, 0))
         with lock:
             active[0] += 1
     on_render(next(iter(roots), ""))

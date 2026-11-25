@@ -436,3 +436,23 @@ def test_base_en_schema_3_2_migre_et_repart_en_complet(tmp_path: Path) -> None:
     assert con.execute("SELECT v FROM meta WHERE k='schema_version'").fetchone()[0] == "3.3"
     # et le passage suivant est bien rapide
     assert catalog.scan([str(share)], CONFIG)["mode"] == "rapide"
+
+
+def test_dates_stockees_viennent_toutes_de_stat(tmp_path: Path) -> None:
+    """La comparaison doit opposer deux valeurs de même origine.
+
+    Sur SMB, la date rendue par l'énumération d'un dossier parent et celle
+    rendue par un stat direct peuvent différer de quelques nanosecondes :
+    mémoriser la première ferait relire le dossier à chaque passage.
+    """
+    import os
+    share = tmp_path / "share"
+    make_share(share)
+    catalog = Catalog(tmp_path / "index.db")
+    catalog.scan([str(share)], CONFIG)
+    con = catalog.con()
+    for table in ("folders", "roots"):
+        for path, mtime_ns, verified in con.execute(
+            f"SELECT path, mtime_ns, verified FROM {table} WHERE verified=1"
+        ):
+            assert mtime_ns == os.stat(path).st_mtime_ns, path
