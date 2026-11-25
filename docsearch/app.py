@@ -221,10 +221,11 @@ class Api:
             return []
         return [str(Path(p)) for p in result]
 
-    def start_scan(self, roots: list[str]) -> dict:
-        return self._start_scan(roots, auto=False)
+    def start_scan(self, roots: list[str], full: bool | None = None) -> dict:
+        return self._start_scan(roots, auto=False, full=full)
 
-    def _start_scan(self, roots: list[str], auto: bool = False) -> dict:
+    def _start_scan(self, roots: list[str], auto: bool = False,
+                    full: bool | None = None) -> dict:
         with self._scan_lock:
             if self._scan["running"]:
                 return {"ok": False, "error": "Un scan est déjà en cours"}
@@ -238,13 +239,14 @@ class Api:
             self._scan = {
                 "running": True, "phase": "scan", "files": 0, "dirs": 0,
                 "added": 0, "visited": 0, "errors": 0, "excluded": 0,
-                "ignored": 0,
+                "ignored": 0, "listed": 0, "unchanged": 0, "stats": 0,
+                "mode": "complete" if full else "rapide",
                 "current": "", "elapsed": 0, "result": None, "error": None,
                 "auto": auto, "next_run": None,
             }
         self.config["roots"] = roots
         save_config(self.config)
-        threading.Thread(target=self._scan_worker, args=(roots,), daemon=True,
+        threading.Thread(target=self._scan_worker, args=(roots, full), daemon=True,
                          name="scan").start()
         return {"ok": True, "auto": auto}
 
@@ -299,18 +301,20 @@ class Api:
             with self._scan_lock:
                 self._scan["next_run"] = self._auto_retry_at.isoformat(timespec="seconds")
 
-    def _scan_worker(self, roots: list[str]) -> None:
+    def _scan_worker(self, roots: list[str], full: bool | None = None) -> None:
         def progress(state: dict) -> None:
             with self._scan_lock:
                 for key in ("files", "dirs", "added", "visited", "errors",
-                            "excluded", "ignored", "current", "elapsed"):
+                            "excluded", "ignored", "current", "elapsed",
+                            "listed", "unchanged", "stats", "mode"):
                     if key in state:
                         self._scan[key] = state[key]
                 if state.get("done"):
                     self._scan["phase"] = "done"
 
         try:
-            result = self.catalog.scan(roots, self.config, progress, self._cancel)
+            result = self.catalog.scan(roots, self.config, progress, self._cancel,
+                                       full=full)
             with self._scan_lock:
                 self._scan.update({
                     "running": False,

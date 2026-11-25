@@ -209,6 +209,7 @@ function wire() {
   // index
   $("#btnAddRoot").addEventListener("click", addRoot);
   $("#btnScan").addEventListener("click", startScan);
+  $("#btnFullScan").addEventListener("click", () => startScan(true));
   $("#btnCancelScan").addEventListener("click", cancelScan);
   $("#btnGoSearch").addEventListener("click", () => nav("search"));
   $("#btnStepSearch").addEventListener("click", () => nav("search"));
@@ -1003,12 +1004,12 @@ async function persistConfig() {
   }
 }
 
-async function startScan() {
+async function startScan(full) {
   if (!S.cfg.roots.length) {
     toast("Ajoutez d'abord un dossier à analyser", true);
     return;
   }
-  const r = await Bridge.call("start_scan", S.cfg.roots);
+  const r = await Bridge.call("start_scan", S.cfg.roots, full === true ? true : null);
   if (!r.ok) {
     toast(r.error || "Analyse impossible", true);
     return;
@@ -1048,7 +1049,8 @@ async function pollScan() {
   }
 
   $("#scanFiles").textContent = fmtInt(st.files);
-  $("#scanDirs").textContent = fmtInt(st.dirs);
+  $("#scanDirs").textContent = fmtInt(
+    st.mode === "rapide" ? (st.unchanged || 0) + (st.listed || 0) : st.dirs);
   $("#scanTime").textContent = `${Math.round(st.elapsed)} s`;
   if (st.current) {
     const text = String(st.current).replace(/^.*?([\\/][^\\/]+[\\/][^\\/]+)$/, "…$1");
@@ -1073,8 +1075,12 @@ async function pollScan() {
       if (res.cancelled) {
         html = `${fmtInt(res.files || 0)} documents dans l'index. Vous pourrez relancer l'analyse plus tard.`;
       } else {
-        html = `${fmtInt(res.files || 0)} documents · ${fmtInt(res.dirs || 0)} dossiers · ${res.elapsed || 0} s`
-             + ` · ${fmtInt(res.visited || 0)} fichiers examinés`;
+        html = `${fmtInt(res.files || 0)} documents · ${fmtInt(res.dirs || 0)} dossiers · ${res.elapsed || 0} s`;
+        if (res.mode === "rapide") {
+          html += ` · révision rapide : ${fmtInt(res.unchanged || 0)} dossiers vérifiés, ${fmtInt(res.listed || 0)} relus`;
+        } else {
+          html += ` · ${fmtInt(res.visited || 0)} fichiers examinés`;
+        }
         if (res.ignored) html += ` · ${fmtInt(res.ignored)} ignorés par vos filtres`;
         if (failed.length) {
           html += `<br>Dossiers inaccessibles : ${failed.map(esc).join(", ")}.`;

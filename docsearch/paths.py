@@ -16,7 +16,7 @@ from pathlib import Path
 
 APP_NAME = "Abionic DocSearch"
 APP_SLUG = "abionic-docsearch"
-VERSION = "3.4.0"
+VERSION = "3.5.0"
 
 DEFAULT_CONFIG: dict = {
     "roots": [],
@@ -41,6 +41,7 @@ DEFAULT_CONFIG: dict = {
     "threads": 24,
     "auto_scan": True,
     "scan_interval_min": 30,
+    "deep_scan_hours": 24,
     "preview_cache_mb": 800,
 }
 
@@ -346,6 +347,10 @@ def load_config() -> dict:
         cfg["scan_interval_min"] = max(5, min(1440, int(cfg.get("scan_interval_min") or 30)))
     except (TypeError, ValueError):
         cfg["scan_interval_min"] = 30
+    try:
+        cfg["deep_scan_hours"] = max(1, min(168, int(cfg.get("deep_scan_hours") or 24)))
+    except (TypeError, ValueError):
+        cfg["deep_scan_hours"] = 24
     return cfg
 
 
